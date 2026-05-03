@@ -66,7 +66,7 @@ Optimization guide for Unreal
 
 ## 3. Unity
 ### a) [Unity Optimization Tools](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnityTools.md)  
-A brief description of tools for UE optimization
+A brief description of tools for Unity optimization
 
 ### b) [Unity Optimization Guide](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/Unity.md)  
 Optimization guide for Unity
