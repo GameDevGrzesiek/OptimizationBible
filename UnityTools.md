@@ -2,10 +2,24 @@
 
 ---
 
+## How to Read This Guide
+
+This guide targets Unity 2018 through Unity 6 (6000.x), with emphasis on shipping to **PC/Steam**. Mobile and VR are explicitly out of scope. Every tip that differs meaningfully across engine generations is tagged:
+
+- **[Pre-2020]** — Unity 2018/2019, Built-in RP era. Much of the workaround folklore on the internet comes from this period. Some of it is now obsolete.
+- **[2020-2022 LTS]** — Unity 2020, 2021, and 2022 LTS. URP and HDRP stable, DOTS Entities 1.0, Addressables as the standard asset management layer, ObjectPool built in.
+- **[Unity 6+]** — Unity 6 (October 2024) and later. GPU Resident Drawer, Render Graph mandatory in URP, STP upscaler, Adaptive Probe Volumes by default, Awaitable mature.
+- **[All versions]** — Applies broadly across all three eras without meaningful change.
+
+**Profile first.** Every section assumes you have the Unity Profiler open and a concrete marker pointing at the bottleneck. Optimizing without profiling data produces regressions as often as gains. [Unity profiling best practices](https://unity.com/how-to/best-practices-for-profiling-game-performance) state this plainly: measure before and after every change.
+
+Unity's SRP Batcher is conceptually similar to UE's PSO caching in that both aim to reduce per-draw-call GPU state setup overhead — but they operate differently. The UE guide is your parallel reference for Unreal patterns; this guide mirrors its structure exactly for Unity equivalents.
+
+---
+
 ## Table of Contents
 
 - [Unity Optimization Tools Guide](#unity-optimization-tools-guide)
-  - [How to Read This Guide](#how-to-read-this-guide)
   - [Tools](#tools)
     - [Built-in Profiler [All versions]](#built-in-profiler-all-versions)
     - [Frame Debugger [All versions]](#frame-debugger-all-versions)
@@ -30,22 +44,6 @@
     - [Books](#books)
     - [Repositories and Samples](#repositories-and-samples)
     - [Community](#community)
-
-
----
-
-## How to Read This Guide
-
-This guide targets Unity 2018 through Unity 6 (6000.x), with emphasis on shipping to **PC/Steam**. Mobile and VR are explicitly out of scope. Every tip that differs meaningfully across engine generations is tagged:
-
-- **[Pre-2020]** — Unity 2018/2019, Built-in RP era. Much of the workaround folklore on the internet comes from this period. Some of it is now obsolete.
-- **[2020-2022 LTS]** — Unity 2020, 2021, and 2022 LTS. URP and HDRP stable, DOTS Entities 1.0, Addressables as the standard asset management layer, ObjectPool built in.
-- **[Unity 6+]** — Unity 6 (October 2024) and later. GPU Resident Drawer, Render Graph mandatory in URP, STP upscaler, Adaptive Probe Volumes by default, Awaitable mature.
-- **[All versions]** — Applies broadly across all three eras without meaningful change.
-
-**Profile first.** Every section assumes you have the Unity Profiler open and a concrete marker pointing at the bottleneck. Optimizing without profiling data produces regressions as often as gains. [Unity profiling best practices](https://unity.com/how-to/best-practices-for-profiling-game-performance) state this plainly: measure before and after every change.
-
-Unity's SRP Batcher is conceptually similar to UE's PSO caching in that both aim to reduce per-draw-call GPU state setup overhead — but they operate differently. The UE guide is your parallel reference for Unreal patterns; this guide mirrors its structure exactly for Unity equivalents.
 
 ---
 

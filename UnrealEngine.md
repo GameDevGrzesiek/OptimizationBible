@@ -27,6 +27,11 @@ You can find them [HERE](https://github.com/GameDevGrzesiek/OptimizationBible/bl
 
 ---
 
+## Table of Contents
+
+TODO
+---
+
 ## Guidelines per Specialization
 
 ### General Tips **[UE4 + UE5]**

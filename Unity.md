@@ -19,13 +19,79 @@ Unity's SRP Batcher is conceptually similar to UE's PSO caching in that both aim
 
 ## Glossary  
 
-You can find it [HERE]()
+You can find it [HERE](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/Definitions.md)
 
 ---
 
 ## Tools
 
-You can find them [HERE]()
+You can find them [HERE](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnityTools.md)
+
+---
+
+## Table of Contents
+
+- [Unity Optimization Guide](#unity-optimization-guide)
+  - [Guidelines per Specialization](#guidelines-per-specialization)
+    - [General Tips](#general-tips)
+    - [Code & Mechanics (C# Programmers / Gameplay Engineers)](#code-mechanics-c-programmers-gameplay-engineers)
+    - [Burst, Jobs, and DOTS Programmers](#burst-jobs-and-dots-programmers)
+    - [Level Design / Environment](#level-design-environment)
+    - [Materials / Shader Authors](#materials-shader-authors)
+    - [Meshes / 3D Art](#meshes-3d-art)
+    - [Lights & Shadows](#lights-shadows)
+    - [VFX (Particle System and VFX Graph)](#vfx-particle-system-and-vfx-graph)
+    - [Audio](#audio)
+    - [Animations](#animations)
+    - [Physics](#physics)
+    - [UI (UGUI and UI Toolkit)](#ui-ugui-and-ui-toolkit)
+    - [Networking and Multiplayer](#networking-and-multiplayer)
+    - [QA / Build / Production](#qa-build-production)
+    - [Tech Art](#tech-art)
+    - [Last Resort Methods](#last-resort-methods)
+  - [Profiling Workflow Reference](#profiling-workflow-reference)
+    - [Session 1: Identifying the Bottleneck Type](#session-1-identifying-the-bottleneck-type)
+    - [Session 2: GC Allocation Hunting](#session-2-gc-allocation-hunting)
+    - [Session 3: GPU Bottleneck Isolation](#session-3-gpu-bottleneck-isolation)
+    - [Session 4: First-Frame and Load Spike](#session-4-first-frame-and-load-spike)
+    - [Session 5: Memory Audit](#session-5-memory-audit)
+    - [Profiling Checklist (Quick Reference)](#profiling-checklist-quick-reference)
+  - [Optimization Sweep Steps (Pre-Milestone Checklist)](#optimization-sweep-steps-pre-milestone-checklist)
+    - [Scene Audit](#scene-audit)
+    - [Meshes / Models](#meshes-models)
+    - [Lighting](#lighting)
+    - [VFX](#vfx)
+    - [UI](#ui)
+    - [Streaming and Memory](#streaming-and-memory)
+    - [Physics Sweep](#physics-sweep)
+    - [Networking Sweep](#networking-sweep)
+    - [Build and Cook Validation](#build-and-cook-validation)
+  - [Top 30 Most Common Mistakes](#top-30-most-common-mistakes)
+  - [Knobs and Settings Cheat Sheet](#knobs-and-settings-cheat-sheet)
+    - [Player Settings](#player-settings)
+    - [Quality Settings](#quality-settings)
+    - [URP Asset Key Knobs](#urp-asset-key-knobs)
+    - [HDRP Frame Settings](#hdrp-frame-settings)
+    - [Build Profile Toggles (Unity 2023.1+)](#build-profile-toggles-unity-20231)
+    - [Quality Scalability Recommendations](#quality-scalability-recommendations)
+    - [Physics Project Settings Reference](#physics-project-settings-reference)
+    - [Audio Project Settings Reference](#audio-project-settings-reference)
+    - [Editor Performance Settings Reference [All versions]](#editor-performance-settings-reference-all-versions)
+  - [Unity -> UE Concept Bridge](#unity-ue-concept-bridge)
+  - [Version Migration Notes](#version-migration-notes)
+    - [Migrating from Built-in RP to URP [Pre-2020] -> [2020-2022 LTS]](#migrating-from-built-in-rp-to-urp-pre-2020-2020-2022-lts)
+    - [Migrating from Unity 2020/2021 to Unity 2022 LTS [2020-2022 LTS era internal]](#migrating-from-unity-20202021-to-unity-2022-lts-2020-2022-lts-era-internal)
+    - [Migrating to Unity 6 [2020-2022 LTS] -> [Unity 6+]](#migrating-to-unity-6-2020-2022-lts-unity-6)
+    - [Performance Regressions to Watch After Unity Version Upgrades](#performance-regressions-to-watch-after-unity-version-upgrades)
+  - [Bibliography and Further Reading](#bibliography-and-further-reading)
+    - [Official Documentation](#official-documentation)
+    - [Unity Blog](#unity-blog)
+    - [Community Guides and Blogs](#community-guides-and-blogs)
+    - [YouTube Channels and Videos](#youtube-channels-and-videos)
+    - [Books](#books)
+    - [Repositories and Samples](#repositories-and-samples)
+    - [Community](#community)
+
 
 ---
 
