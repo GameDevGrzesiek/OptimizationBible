@@ -11,8 +11,6 @@ This guide covers Unreal Engine 4 (4.22–4.27) and Unreal Engine 5 (5.0–5.6+)
 - **[UE5 only]** — UE5-exclusive feature not present or experimental in UE4
 - **[Deprecated in UE5]** — was standard in UE4, removed or superseded in UE5
 
-**Profile first.** Every section assumes you have profiling data pointing at the bottleneck. Optimizing without data produces regressions as often as gains.
-
 ---
 
 ## Glossary
