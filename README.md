@@ -1,5 +1,9 @@
 # Optimization Bible
-Hi! My name is Grzegorz Wątroba, I'm making games since 2010:  
+Hi! My name is Grzegorz Wątroba
+
+![Alt text](https://cdn.mobygames.com/02e849a6-ab71-11ed-837d-02420a00019b.webp)
+
+and I'm making games since 2010:  
 https://www.mobygames.com/person/919153/grzegorz-watroba/  
 https://www.linkedin.com/in/watrobagrzegorz/  
 
@@ -31,11 +35,11 @@ https://store.steampowered.com/app/4184130/Foxy_Dumplings/
 If you find any mistake, if you think I'm wrong or something is not correct in any sense - write to me.
 If you want to share some tips of your own - let me know I will, of course, credit your contribution!
 
-Contact me here:
-watroba.grzegorz@gmail.com
-okiemdeva@gmail.com
+Contact me here:  
+<watroba.grzegorz@gmail.com>  
+<okiemdeva@gmail.com>  
 
-I'll TRY to update this regularily...  
+I'll **TRY** to update this regularily...  
 
 ---
 
