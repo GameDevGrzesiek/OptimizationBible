@@ -15,13 +15,16 @@ This guide covers Unreal Engine 4 (4.22–4.27) and Unreal Engine 5 (5.0–5.6+)
 
 ---
 
-## Glossary
-You can find those here
+## Glossary  
+
+You can find those [HERE](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/Definitions.md)
 
 ---
 
-## Tools
-You can find them here
+## Tools  
+
+You can find them [HERE](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnrealEngineTools.md)
+
 ---
 
 ## Guidelines per Specialization
