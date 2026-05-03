@@ -38,7 +38,7 @@ I'll TRY to update this regularily...
 ---
 
 ## 1. Basic / Common Information
-### a) Basic definitions (both Unity & Unreal)  
+### a) [Basic definitions (both Unity & Unreal)] (https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/Definitions.md)
 Glossary rather for beginners but it's still useful for further reading
 
 ### b) [PC Specs (as of April 2026)](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/PCConfigurationsSpecs.md)  
@@ -50,11 +50,17 @@ If you're wondering how your game would work on a specific platform and you don'
 ---
 
 ## 2. Unreal Engine
-### a) Unreal Engine Tools (for UE4 & UE5)
-### b) [Unreal Engine Notes](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnrealEngine.md)
+### a) [Unreal Engine Optimization Tools (for UE4 & UE5)](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnrealEngineTools.md)  
+A brief description of tools for UE optimization
+
+### b) [Unreal Engine Optimization Guide](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnrealEngine.md)  
+Optimization guide for Unreal
 
 ---
 
 ## 3. Unity
-### a) Unity Tools
-### b) Unity Notes
+### a) [Unity Optimization Tools]()  
+A brief description of tools for UE optimization
+
+### b) [Unity Optimization Guide]()  
+Optimization guide for Unity

@@ -2,6 +2,38 @@
 
 ---
 
+## Table of Contents
+
+- [Unity Optimization Tools Guide](#unity-optimization-tools-guide)
+  - [How to Read This Guide](#how-to-read-this-guide)
+  - [Tools](#tools)
+    - [Built-in Profiler [All versions]](#built-in-profiler-all-versions)
+    - [Frame Debugger [All versions]](#frame-debugger-all-versions)
+    - [Memory Profiler Package [2020-2022 LTS] (com.unity.memoryprofiler, from Unity 2018.3)](#memory-profiler-package-2020-2022-lts-comunitymemoryprofiler-from-unity-20183)
+    - [Profile Analyzer Package [2020-2022 LTS] (com.unity.performance.profile-analyzer, from 2019)](#profile-analyzer-package-2020-2022-lts-comunityperformanceprofile-analyzer-from-2019)
+    - [Deep Profile Mode [All versions]](#deep-profile-mode-all-versions)
+    - [Custom Profiler Markers [All versions]](#custom-profiler-markers-all-versions)
+    - [Standalone Profiler [Unity 6+] (available 2022.2+)](#standalone-profiler-unity-6-available-20222)
+    - [Connecting to a Player Build (Remote Profiling) [All versions]](#connecting-to-a-player-build-remote-profiling-all-versions)
+    - [RenderDoc / PIX / NSight [All versions]](#renderdoc-pix-nsight-all-versions)
+    - [Build Report Inspector / Build Profiles [2020-2022 LTS] (introduced Unity 2022.2)](#build-report-inspector-build-profiles-2020-2022-lts-introduced-unity-20222)
+    - [Profile in a Player Build, Not the Editor [All versions]](#profile-in-a-player-build-not-the-editor-all-versions)
+    - [Editor Iteration Settings Ś Domain and Scene Reload [Unity 2019.3+]](#editor-iteration-settings-domain-and-scene-reload-unity-20193)
+  - [Prerequisites for Checkups](#prerequisites-for-checkups)
+  - [Basic Checkup List](#basic-checkup-list)
+  - [Advanced Checkup List](#advanced-checkup-list)
+  - [Bibliography and Further Reading](#bibliography-and-further-reading)
+    - [Official Documentation](#official-documentation)
+    - [Unity Blog](#unity-blog)
+    - [Community Guides and Blogs](#community-guides-and-blogs)
+    - [YouTube Channels and Videos](#youtube-channels-and-videos)
+    - [Books](#books)
+    - [Repositories and Samples](#repositories-and-samples)
+    - [Community](#community)
+
+
+---
+
 ## How to Read This Guide
 
 This guide targets Unity 2018 through Unity 6 (6000.x), with emphasis on shipping to **PC/Steam**. Mobile and VR are explicitly out of scope. Every tip that differs meaningfully across engine generations is tagged:
