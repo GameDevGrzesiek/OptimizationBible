@@ -1,4 +1,4 @@
-# Unity Optimization Guide for Indie Teams
+# Unity Optimization Guide
 
 ---
 

@@ -1,8 +1,6 @@
 # Steam Hardware Survey — PC Tier Configurations & Game Dev Targets
 
 **Source:** [Steam Hardware & Software Survey April 2026](https://store.steampowered.com/hwsurvey/Steam-Hardware-Software-Survey-Welcome-to-Steam)
-**Survey month:** April 2026 (published May 2, 2026)
-**Analysis compiled:** May 2026
 
 ---
 
