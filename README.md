@@ -1,7 +1,7 @@
 # Optimization Bible
 This repository hosts my notes regarding games optimization with focus on Unity and Unreal in particular.
 I'm making games since 2010:
-https://www.mobygames.com/person/919153/grzegorz-watroba/
+https://www.mobygames.com/person/919153/grzegorz-watroba/  
 https://www.linkedin.com/in/watrobagrzegorz/
 
 I'm mostly interested in game optimization and porting, not very hot for mobile or VR so you won't find here many elements specific for those types of projects.
@@ -10,17 +10,15 @@ Some of them are simple copies of guides, some are my own findings. Most of them
 These are not universal, not all of these might work in your project, but it's worth to try :P
 
 If you find this and it's useful to you - find me on social media, follow, like my content on LinkedIn or YouTube:
-https://x.com/gamedevgrzesiek
-https://x.com/okiemdeva
-
-https://bsky.app/profile/gwatroba.com
-https://bsky.app/profile/okiemdeva.pl
-
-https://www.youtube.com/@okiemdeva
+https://x.com/gamedevgrzesiek  
+https://x.com/okiemdeva  
+https://bsky.app/profile/gwatroba.com  
+https://bsky.app/profile/okiemdeva.pl  
+https://www.youtube.com/@okiemdeva  
 
 If you'll like it even more: donate something on patronite or buycoffee (but you don't have to):
-https://buycoffee.to/okiemdeva
-https://patronite.pl/OkiemDeva
+https://buycoffee.to/okiemdeva  
+https://patronite.pl/OkiemDeva  
 
 OR
 
