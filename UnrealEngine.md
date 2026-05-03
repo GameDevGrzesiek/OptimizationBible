@@ -1,407 +1,612 @@
-# UE5 Optimization Guide
+# UE4 / UE5 Optimization Guide (Revised & Merged Edition)
 
 ---
 
-## Introduction
+## How to Read This Guide
 
-This guide distills production knowledge from Epic's GDC and Unreal Fest talks, tech-art blogs, and community threads for indie developers building PC games in Unreal Engine 5.3–5.5. There are no beginner tutorials here — the focus is on production pitfalls, non-obvious techniques, and decisions that genuinely determine the performance of a shipped game. Mobile and VR topics are intentionally excluded.
+This guide covers Unreal Engine 4 (4.22–4.27) and Unreal Engine 5 (5.0–5.6+). Every tip that differs meaningfully between engine generations is tagged:
+
+- **[UE4 + UE5]** — applies to both engines without significant changes
+- **[UE4 only]** — UE4-specific feature or workflow removed or replaced in UE5
+- **[UE5 only]** — UE5-exclusive feature not present or experimental in UE4
+- **[Deprecated in UE5]** — was standard in UE4, removed or superseded in UE5
+
+**Audience:** Intermediate-to-senior developers across all disciplines — programmers, Blueprint scripters, level designers, artists, and tech artists. Basics are covered briefly in the Glossary; the bulk of the guide is production-grade specifics.
+
+**On legacy advice corrections:** Several sections in earlier versions of this document contained outright errors. These have been corrected throughout. The most significant fixes are noted inline with `[CORRECTED]` markers where the wrong advice circulated widely enough to matter.
+
+**Profile first.** Every section assumes you have profiling data pointing at the bottleneck. Optimizing without data produces regressions as often as gains.
 
 ---
 
-## Common Foundation: Profiling and Work Hygiene
+## Glossary
 
-The cardinal rule: measure first, then optimize. Optimizing without data wastes time on things that are not the bottleneck.
+### Frames per Second (FPS) **[UE4 + UE5]**
+Frames rendered per second. Higher is better. The inverse is frame time in milliseconds (ms): 60 FPS = 16.67 ms/frame, 30 FPS = 33.33 ms/frame. Always reason in ms, not FPS — a 10 FPS drop from 60 to 50 FPS costs 3.3 ms, but a 10 FPS drop from 30 to 20 FPS costs 16.7 ms.
 
-### Core Tools
+### CPU **[UE4 + UE5]**
+The game's central processor. In UE, the CPU runs the Game Thread (ticks, AI, physics, Blueprints), the Render Thread (render command building, Lumen and Nanite CPU-side), and the RHI Thread (API submission). Bottleneck is identified with `stat unit`: if the `Game` line is highest, the Game Thread is the limiting factor.
 
-**Unreal Insights** is the primary profiling tool in UE5, consisting of `UnrealTraceServer` (backend) and `UnrealInsights` (viewer). Trace channels are selected before a session — the defaults cover typical cases, but memory analysis requires adding `memory_light,memtags`. From UE5.5 onward, `Trace.RegionBegin` / `Trace.RegionEnd` are available for tagging multi-frame regions (e.g. GC passes, level streaming) directly on the timeline ([Tom Looman — UE 5.5 Performance Highlights](https://tomlooman.com/unreal-engine-5-5-performance-highlights/)).
+### GPU **[UE4 + UE5]**
+Executes shaders, rasterization, compute passes (Lumen, Nanite, VSM, Niagara GPU). Bottleneck identified when the `GPU` line in `stat unit` exceeds the frame budget. Use `ProfileGPU` (Ctrl+Shift+,) or `stat gpu` for per-pass breakdown.
 
+### Draw Call **[UE4 + UE5]**
+A command to the GPU to render a batch of geometry with a given material and state. In UE4, draw calls are a primary CPU bottleneck. In UE5 with Nanite, the traditional draw call model is replaced for Nanite geometry — the bottleneck shifts to shading bins. Draw calls still matter for non-Nanite geometry, skeletal meshes, translucency, and UI.
+
+### Antialiasing **[UE4 + UE5]**
+Technique to reduce jagged edges. UE options: MSAA (forward shading only), FXAA (cheap, low quality), TAA (UE4 default, temporal ghosting), TSR **[UE5 only]** (Temporal Super Resolution — Epic's production AA + upsampler). DLSS (NVIDIA), FSR (AMD), and XeSS (Intel) are third-party plugins layered on top.
+
+### TSR (Temporal Super Resolution) **[UE5 only]**
+Epic's built-in temporal upsampler and AA solution, replacing TAA as the default in UE5. Renders at a lower internal resolution then reconstructs. Key CVars: `r.TSR.History.ScreenPercentage`, `r.TSR.Velocity.WeightClampingPixelSpeedLimit`. More stable than TAA for high-frequency detail, significantly cheaper than DLSS at equivalent upscale ratios.
+
+### Ambient Occlusion **[UE4 + UE5]**
+A screen-space post-process (SSAO) approximating how much ambient light a point receives. In UE5 with Lumen enabled, SSAO is usually disabled in favor of Lumen's GI. `r.AmbientOcclusion.Intensity 0` to disable.
+
+### Anti-Tearing Techniques (V-Sync, G-Sync, FreeSync) **[UE4 + UE5]**
+V-Sync caps the renderer to the monitor refresh rate, eliminating tearing but introducing input latency and frame pacing issues when performance dips below target. G-Sync and FreeSync (adaptive sync) allow variable refresh rates. `r.VSync` to toggle.
+
+### Checkerboarding **[UE4 + UE5]**
+Rendering alternating pixels on alternating frames and reconstructing a full image using temporal data. A cost-cutting technique for consoles. Not to be confused with TSR or DLSS upscaling, which operate on full output resolution reconstruction.
+
+### Shadow Mapping **[UE4 + UE5]**
+Classic depth-map shadow technique. In UE4 (and UE5 without Lumen), cascaded shadow maps (CSM) are used for directional lights. Shadow map resolution, cascade count, and cascade transition distances are primary tuning parameters. In UE5 with Lumen, VSM (Virtual Shadow Maps) replaces conventional shadow maps for dynamic lights.
+
+### Virtual Shadow Maps (VSM) **[UE5 only]**
+UE5's default shadow rendering system. Conceptually a 16k×16k virtual shadow atlas per light, subdivided into 128×128 pages. Only pages covering actually visible shadow-receiving surfaces are allocated in a physical page pool. Dramatically reduces the "resolution vs. coverage" trade-off of traditional shadow maps. Key CVar: `r.Shadow.Virtual.MaxPhysicalPages` (default 4096, increase to 8192 for open worlds).
+
+### Ray Tracing **[UE4 + UE5]**
+Hardware-accelerated ray tracing (DXR / Vulkan RT). In UE4.26+, ray tracing is optional for shadows, reflections, GI, and AO. In UE5, Lumen uses ray tracing internally (Hardware Lumen) or falls back to distance fields (Software Lumen). Requires GPU with RT cores (NVIDIA RTX, AMD RX 6000+, Intel Arc).
+
+### Lumen **[UE5 only]**
+UE5's fully dynamic global illumination and reflections system. Operates in two modes: Software Lumen (distance fields + surface cache, no RT hardware required) and Hardware Lumen (DXR ray tracing, higher quality, more platforms). See Section 3 (Lights & Shadows) for detailed tuning. CVars: `r.Lumen.ScreenProbeGather.TracingOctahedronResolution`, `r.Lumen.Reflections.DownsampleFactor`.
+
+### Nanite **[UE5 only]**
+UE5's virtualized micro-polygon geometry renderer. Automatically streams and renders only visible micropolygons from an unlimited-polygon source mesh. Replaces manual LOD creation for high-poly static meshes. Does not support translucency, two-sided foliage cards with complex WPO, or skeletal meshes (experimental in UE5.5+). Primary CVar: `r.Nanite.MaxPixelsPerEdge`.
+
+### Tessellation **[UE4 + UE5 — version notes critical]**
+Classic GPU hardware tessellation (PN Triangles, flat tessellation) was a first-class material feature in UE4. **[Deprecated in UE5]**: Classic pipeline tessellation was removed in UE5.0. It is replaced by Nanite Tessellation / Nanite Displacement (experimental UE5.2, production from ~UE5.4), which operates via the Nanite software rasterizer rather than the fixed-function GPU tessellator. Enabling Nanite Tessellation requires `r.Nanite.Tessellation=1` and the Nanite Displacement Mesh plugin.
+
+### Depth of Field (DOF) **[UE4 + UE5]**
+Post-process effect simulating camera lens blur for out-of-focus objects. Methods: Gaussian (cheapest, mobile), Circle DOF (UE4), Cinematic DOF (bokeh simulation, expensive). Disable `r.DepthOfField.TemporalAA` for a slight temporal stability gain.
+
+### Anisotropy **[UE4 + UE5]**
+Anisotropic texture filtering. Improves texture sharpness at oblique angles at a minor cost. `r.MaxAnisotropy 4` or `8` is a common shipping target. `16` is overkill for most surfaces.
+
+### Volumetric Effects **[UE4 + UE5]**
+Includes Volumetric Fog, Volumetric Clouds, and height fog. Expensive. Key CVars: `r.VolumetricFog.GridPixelSize`, `r.VolumetricFog.GridSizeZ`, `r.VolumetricCloud.ShadowMap.RaymarchMaxStepCount`. Disable on low-end targets with `r.VolumetricFog 0`.
+
+### DLSS, FSR, XeSS **[UE4 + UE5]**
+Third-party upscaling plugins. DLSS (NVIDIA, deep learning), FSR 3 (AMD, open, includes Frame Generation), XeSS (Intel). All function as replacements for TSR/TAA in the AA post-process slot. Install via vendor plugin packages; they do not ship with the engine. DLSS Frame Generation requires DLSS 3+ and RTX 40+ series.
+
+### Rendering Pipeline **[UE4 + UE5]**
+UE5 defaults to Deferred Rendering. Forward Rendering is available for VR or mobile. The path significantly affects which lighting features are available. Nanite and Lumen require Deferred. VSM requires Deferred.
+
+### Shader **[UE4 + UE5]**
+A GPU program. In UE, materials compile to many shader permutations via the shader compilation system. Too many unique shaders increases PSO (Pipeline State Object) compilation stalls on first render. Use `stat shadercompiling` to track outstanding compilations.
+
+### Material **[UE4 + UE5]**
+A node graph that compiles to a shader. A material defines the shader topology. Material Instances (MIC / MID) share the parent's compiled shader but vary scalar/vector/texture parameters.
+
+### Material Instance **[UE4 + UE5]**
+A child of a master material. Shares the master's compiled shader, only overrides parameters. Dynamic Material Instances (MID) are created at runtime. Pool MIDs rather than creating them per-frame. Static Material Instances (MIC, the cooked asset) have zero overhead over the master.
+
+### Material Pass **[UE4 + UE5]**
+The render pass a material occupies: Opaque, Masked, or Translucent. Opaque is cheapest. Masked adds a discard step. Translucent renders in a separate pass and cannot receive accurate shadows from VSM or Lumen without special handling.
+
+### LOD (Level of Detail) **[UE4 + UE5]**
+A lower-polygon mesh substituted at distance to reduce GPU load. Still the primary strategy for non-Nanite geometry. In UE5 with Nanite enabled on a mesh, manual LODs are no longer used for rendering — Nanite manages its own internal LOD. Fallback LODs in Nanite meshes serve collision and non-Nanite render paths.
+
+### World Partition **[UE5 only]**
+UE5's streaming world system, replacing World Composition for new projects. Divides the world into a spatial grid of cells, streaming them in/out based on proximity to streaming sources (typically the player controller). Supports One-File-Per-Actor (OFPA) for source control. Key concepts: Runtime Grids, Data Layers, Level Instances, Packed Level Actors. **[Deprecated in UE5]**: World Composition is still available but not recommended for new UE5 projects.
+
+### Data Layers **[UE5 only]**
+World Partition concept grouping actors into logical layers that can be loaded/unloaded independently. Runtime Data Layers control game state (e.g., "occupied vs. destroyed village"). External Data Layers (EDL) separate DLC or seasonal content into plugins.
+
+### HLOD (Hierarchical LOD) **[UE4 + UE5 — different impl]**
+UE4 HLOD: generated merged meshes for distant clusters, configured per-HLOD Layer. UE5 World Partition HLOD: automatically built for streaming cells; supports Instanced (no decimation, keeps Nanite) and Merged (decimated mesh) types. HLOD1 also serves as Lumen's Far Field geometry (>1 km).
+
+### Mesh Distance Fields **[UE4 + UE5]**
+Volumetric distance field representation of each mesh, used by Software Lumen, dynamic shadow casting (DF shadows), and ambient occlusion. Enable per mesh in Static Mesh Editor > Build Settings > Generate Mesh Distance Field. Global setting: `Project Settings > Rendering > Generate Mesh Distance Fields`.
+
+### Niagara **[UE4.20+ + UE5]**
+UE's modern GPU and CPU particle system, replacing Cascade. Supports GPU simulations, Data Channels, Significance Manager integration, and neighbor queries. **[Deprecated in UE5]**: Cascade is still usable but not developed. Niagara is the standard.
+
+### MetaSounds **[UE5 only]**
+UE5's node-based audio DSP graph system. Replaces Sound Cues as the primary audio authoring tool in UE5. Supports per-instance parameters, procedural synthesis, and Quartz integration. **[UE4 only]**: Sound Cues remain the primary system in UE4.
+
+### Iris **[UE5.4+ experimental, UE5.5+ shipping option]**
+A rewrite of UE's replication data path. Separates gameplay from networking via replication state descriptors. Backward-compatible with existing UPROPERTY replication. Enabled via `net.Iris.UseIrisReplication=1`. Offers better scalability at high player counts versus the legacy Net Driver.
+
+### Push Model Replication **[UE4.25+ + UE5]**
+An opt-in optimization that skips property replication polling for actors that haven't changed. Instead of the engine scanning all replicated properties every frame, properties only replicate when explicitly marked dirty via `MARK_PROPERTY_DIRTY_FROM_NAME`. Significant server CPU savings for actors with infrequently-changing state.
+
+### TSoftObjectPtr / TSoftClassPtr **[UE4 + UE5]**
+Pointer types that store only an asset path (string). The asset is NOT loaded until explicitly resolved via `LoadSynchronous()` or `RequestAsyncLoad()`. Use to avoid loading assets at Blueprint startup. **[CORRECTED]**: An older version of this guide stated "TSoftObjectPtr uses dynamic_cast which is very expensive." This is wrong. UE never uses `dynamic_cast` in its `Cast<>` system — it walks the UClass tree via static lookup. The real performance concern with soft pointers is the synchronous resolve (`LoadSynchronous()`), which stalls the calling thread until the asset is loaded from disk. Cache the result; never call `LoadSynchronous()` in Tick.
+
+### TObjectPtr **[UE5 only]**
+UE5 replacement for raw `T*` in `UPROPERTY` class members. Compiles to a raw pointer in shipping builds (zero cost). In editor builds adds access tracking, lazy-load support, and better null diagnostics. Required for correct behavior with UE5.4+ incremental GC.
+
+### TWeakObjectPtr **[UE4 + UE5]**
+Non-owning pointer that becomes null automatically when the referenced UObject is garbage-collected. `Get()` incurs a `GUObjectArray` lookup (potential cache miss). Pattern: `if (UObject* Obj = WeakPtr.Get()) { ... }` — single dereference, null check, use.
+
+### Subsystems **[UE4.22+ + UE5]**
+Engine-managed singleton-like objects tied to the lifetime of their outer (Game Instance, World, Player Controller, etc.). The preferred replacement for custom manager actors and singletons. `UGameInstanceSubsystem`, `UWorldSubsystem`, `ULocalPlayerSubsystem`, `UEngineSubsystem`.
+
+### Live Coding **[UE4.22+ default in UE5]**
+Hot-patch compilation that recompiles and relinks function bodies in a running editor session. Safe only for changes inside function bodies (`.cpp` logic changes). Unsafe for UPROPERTY / UFUNCTION declaration changes, struct layout changes, or constructor changes — those require a full editor restart. **[Deprecated in UE5]**: Hot Reload (the older `Ctrl+Alt+F11` mechanism) is replaced by Live Coding as the default.
+
+### Inclusive Time vs Exclusive Time **[UE4 + UE5]**
+Inclusive time: wall time of a function including all called children. Exclusive time: time spent only in that function body, not children. Sort Insights Timers by Exclusive Time to find the single most expensive function scope.
+
+### CPU Bound vs GPU Bound **[UE4 + UE5]**
+CPU bound: the GPU is waiting for the CPU to finish (Game Thread or Render Thread is the bottleneck). GPU bound: the CPU is waiting for the GPU. Diagnosed with `stat unit`. You cannot fix GPU-bound scenes by optimizing CPU code.
+
+### Substrate **[UE5.3+ experimental / UE5.5+ opt-in]**
+UE5's new material shading model system replacing the fixed-function material domain system. Supports layered shading models, physically-based slab stacking, and heterogeneous material structures. Enabled via Project Settings > Rendering > Substrate. Not backward compatible — requires material conversion.
+
+---
+
+## Tools
+
+### Console / `stat` Commands **[UE4 + UE5]**
+
+Always run `stat unit` first. It tells you which thread is over budget.
+
+| Command | What It Shows |
+|---|---|
+| `stat none` | Clears all active stat overlays |
+| `stat fps` | Frame time and FPS counter |
+| `stat unit` | Game / Draw / GPU / RHIT thread times — primary bottleneck identifier |
+| `stat unitgraph` | Rolling time-series graph of all thread times |
+| `stat game` | Game Thread tick group breakdown |
+| `stat scenerendering` | Draw call count, primitive count, mesh draw commands |
+| `stat gpu` | GPU pass breakdown (requires `r.GPUStatsEnabled 1`) |
+| `stat particles` | Particle system CPU budget |
+| `stat hitches` | Flags frames above hitch threshold (default 200 ms) |
+| `stat namedevents` | Enables runtime named event instrumentation |
+| `stat memory` | High-level memory category totals |
+| `stat streaming` | Texture and mesh streaming status |
+| `stat streaming.details` | Detailed streaming pool breakdown |
+| `stat shadercomplexity` | (View Mode) — see View Modes section |
+| `stat nanite` **[UE5 only]** | Nanite cluster/triangle/instance stats |
+| `stat lumen` **[UE5 only]** | Lumen probe and cache stats |
+| `stat virtualshadowmaps` **[UE5 only]** | VSM page pool usage and cache stats |
+| `stat raytracing` | Ray tracing pass counts (when RT enabled) |
+| `stat initviews` | Visibility culling stats: frustum, occlusion, precomputed |
+| `ProfileGPU` | Opens GPU Visualizer (or Ctrl+Shift+,) |
+| `Memreport -full` | Dumps `.memreport` to `Saved/Profiling/MemReports/` |
+| `obj list` | Lists all loaded UObjects by class with memory |
+
+**`ShowFlag` commands** — prefix with `show` to toggle individual rendering features:
 ```
-stat unit          // bottleneck: Game / Draw / GPU / RHI
-stat gpu           // GPU breakdown per pass
-stat scenerendering // draw calls, primitive count
-stat hitches       // frames above the hitch threshold
-ProfileGPU         // detailed GPU breakdown (shortcut: Ctrl+Shift+,)
+show StaticMeshes
+show SkeletalMeshes
+show Particles
+show Decals
+show Translucency
+show LOD
+show Bounds
+show Collision
+show LightComplexity
+show ShaderComplexity
 ```
 
-**GPU Visualizer** is opened via `ProfileGPU`. For deep GPU debugging (per-draw-call shaders, resources, timings), use the RenderDoc plugin — with D3D12, set `r.ShowMaterialDrawEvents 0` before capturing to eliminate GPU marker overhead from skewing measurements ([AMD GPUOpen — Unreal Engine Performance Guide](https://gpuopen.com/learn/unreal-engine-performance-guide/)).
+---
 
-**Important:** Always profile in a "Test" configuration (packaged build), not in the editor. Editor builds carry significant overhead that heavily skews results ([Unreal Fest 2024 — Optimizing the Game Thread](https://www.youtube.com/watch?v=KxREK-DYu70)).
+### View Modes **[UE4 + UE5]**
 
-### Custom Code Instrumentation
+Access via the Viewport dropdown (Lit → select mode) or the `viewmode` console command.
 
-Add your own statistics visible in both the `stat` overlay and Insights:
+| View Mode | Purpose |
+|---|---|
+| Lit | Default final frame |
+| Unlit | Removes lighting cost — shows pure material shading |
+| Wireframe | Polygon density visualization |
+| Shader Complexity | Shader instruction cost per pixel (green = cheap, red = expensive) |
+| Quad Overdraw | Overdraw of shaded quads — high values = fill rate bottleneck |
+| Light Complexity | Number of lights affecting each pixel |
+| LOD Coloration | Visualize active LOD per mesh |
+| Nanite Visualization → Overdraw **[UE5 only]** | Nanite overdraw (white/yellow = expensive layers) |
+| Nanite Visualization → Triangles **[UE5 only]** | Triangle density per screen area |
+| Nanite Visualization → Clusters **[UE5 only]** | Cluster allocation visualization |
+| Lumen → Surface Cache **[UE5 only]** | Pink = no coverage; yellow = culled |
+| Lumen → Card Placement **[UE5 only]** | Lumen card orientation debug |
+| Virtual Shadow Map → Page Allocation **[UE5 only]** | Green = cached pages, red = new page allocations |
+| Substrate Visualization **[UE5.3+ only]** | Substrate material layer breakdown |
+
+---
+
+### Unreal Engine Profiler (Session Frontend) **[UE4 + UE5 — Legacy]**
+
+The Session Frontend (`Window > Developer Tools > Session Frontend`) includes a CPU profiler with flame graph, stat capture, and remote session support. In UE5 this tool is superseded by Unreal Insights and receives minimal development. The Session Frontend profiler requires a networked editor session; it cannot profile standalone packaged builds. Use it only if Insights is unavailable or for quick in-editor investigations. For any serious performance work, use Unreal Insights.
+
+---
+
+### GPU Visualizer **[UE4 + UE5]**
+
+Open with `ProfileGPU` console command or `Ctrl+Shift+,`. Displays GPU time per render pass in a hierarchical tree. Key passes to examine:
+
+- `ShadowDepths` — shadow map rendering (most often the culprit in complex scenes)
+- `BasePass` — G-buffer fill
+- `Translucency` — translucent geometry rendering
+- `PostProcessing` — post-process stack
+- `Nanite` **[UE5 only]** — Nanite rasterize, classify, shadow depth passes
+- `Lumen` **[UE5 only]** — screen probe gather, reflections, surface cache updates
+
+The milliseconds toggle (switch between GPU cycles and ms) is essential for platform comparison. UE5.6 unified the GPU Profiler — `stat gpu`, `ProfileGPU`, and Insights GPU track now share the same instrumentation stream.
+
+For capture-level debugging, enable the **RenderDoc** plugin (restart required), then use the RenderDoc toolbar button to capture a frame. RenderDoc exposes per-draw-call shaders, resource states, and timing unavailable from the in-engine visualizer. With D3D12, set `r.ShowMaterialDrawEvents 0` before capturing to eliminate GPU marker overhead from skewing timing ([AMD GPUOpen — Unreal Engine Performance Guide](https://gpuopen.com/learn/unreal-engine-performance-guide/)).
+
+**Alternatives [UE4 + UE5]:**
+- PIX (Microsoft) — D3D12 captures, GPU timeline, shader debugging
+- NSight (NVIDIA) — deep shader and warp-level profiling
+- Radeon GPU Profiler (AMD) — pipeline stall visualization
+
+---
+
+### Unreal Insights **[UE4.21+, primary tool in UE5]**
+
+Insights is the production-grade profiling system. It captures structured binary trace events into `.utrace` files for offline or live analysis. Unlike `stat` commands, Insights works in Test builds (the gold standard configuration) and can profile standalone game instances, dedicated servers, and multi-client sessions.
+
+**Architecture:**
+- `UnrealTraceServer.exe` — headless recorder, listens on TCP port 1981 (trace data), 1989 (session browser)
+- `UnrealInsights.exe` — analysis frontend, connects to game on port 1985 for live sessions
+- Game instance emits binary events over TCP or to disk
+
+**Quick start:**
+```bash
+# Launch game with trace channels:
+YourGame-Win64-Test.exe -trace=cpu,frame,gpu,bookmark -tracehost=127.0.0.1
+
+# Or late-attach from console:
+Trace.SendTo 127.0.0.1 cpu,frame,gpu,bookmark
+```
+
+**Trace channel reference:**
+
+| Channel | Captures | Overhead |
+|---|---|---|
+| `cpu` | CPU timing scopes | Low |
+| `frame` | Frame begin/end | Minimal |
+| `bookmark` | Named markers (`TRACE_BOOKMARK`) | Minimal |
+| `counters` | Integer/float time series | Low |
+| `gpu` | GPU hardware timestamps (DX12/Vulkan) | Low–Medium |
+| `loadtime` | Asset loading durations | Low |
+| `net` | Replication packets (requires `-NetTrace=1`) | Medium |
+| `animation` | Animation graph state | Medium–High |
+| `object` | UObject create/destroy | Medium |
+| `memory` | All malloc/free with stacks | **Very High** |
+| `assetmetadata` | Asset package names for memory | Medium |
+| `task` | Task Graph scheduling | Medium |
+| `memory_light,memtags` | Memory categories (lighter) | Low–Medium |
+
+**Key rules:**
+- Always profile in a **Test** packaged build, never Editor PIE. PIE adds 2–4× Game Thread overhead. [Jake Simpson at Unreal Fest 2024](https://www.youtube.com/watch?v=KxREK-DYu70) showed 15 ms PIE vs 4 ms standalone for the same project.
+- The `memory` channel must be active from process start — you cannot retroactively capture allocations.
+- For the richest asset memory breakdown, define `LLM_ALLOW_ASSETS_TAGS=1` in your `.Target.cs`.
+
+**Custom instrumentation in C++ — profiling macro comparison:**
+
+| Macro | Visible in | Overhead | When to Use |
+|---|---|---|---|
+| `SCOPE_CYCLE_COUNTER(STAT_X)` | Stats System + Insights | Low | General CPU timing, always-on in non-shipping |
+| `TRACE_CPUPROFILER_EVENT_SCOPE_STR("X")` | Insights CPU track | Low | Fine-grained function scopes in Insights |
+| `SCOPED_NAMED_EVENT(Name, Color)` | Insights + Stats | Medium (~20% frame) | Targeted investigations only — never permanent |
+| `TRACE_BOOKMARK(TEXT("X"))` | Insights timeline | Minimal | Frame markers, event timestamps |
 
 ```cpp
-// In the header:
+// Stat system (appears in stat overlays + Insights):
 DECLARE_STATS_GROUP(TEXT("MyGame"), STATGROUP_MyGame, STATCAT_Advanced);
 DECLARE_CYCLE_STAT(TEXT("ProcessAI"), STAT_ProcessAI, STATGROUP_MyGame);
+SCOPE_CYCLE_COUNTER(STAT_ProcessAI);
 
-// In .cpp:
-void UMyAIComponent::Tick(float DeltaTime)
+// Insights-only (fine-grained, Insights flame graph):
+TRACE_CPUPROFILER_EVENT_SCOPE_STR("MySystem::HeavyUpdate");
+
+// Counter time series (visible in Insights Counters tab):
+TRACE_DECLARE_INT_COUNTER(ActiveProjectileCount, TEXT("Game/Projectiles"));
+TRACE_COUNTER_SET(ActiveProjectileCount, Projectiles.Num());
+
+// Multi-frame region marker (UE5.3+):
+Trace.RegionBegin BossArena   // console
+TRACE_BEGIN_REGION_WITH_ID(TEXT("BossArena")); // C++
+```
+
+**Reading flame graphs:** The Timing panel shows horizontal bars per thread, width = duration. Sort the Timers tab by Exclusive Time to find the single most expensive scope. The Callers/Callees panel traces a symptom back to its root. Frame spikes appear as red bars in the Frame panel at the top — click to zoom.
+
+**Memory investigation workflow:**
+```
+-trace=default,memory,metadata,assetmetadata -llmtagsets=assets,assetclasses
+```
+Then use Memory Insights > Allocs Table, group by Asset Package. `Memreport -full` is a legacy fallback; Epic no longer actively maintains its visualization tooling ([Epic Forums — Memreport](https://forums.unrealengine.com/t/visualisation-tools-for-memreport-output/2587594)).
+
+**Trace.RegionBegin / RegionEnd [UE5.3+]:** Tag named spans across multiple frames. Appears as a dedicated track in the timeline. Used for scenario-scoped comparisons (boss fight, level load, etc.). Automated CLI export for CI regression tracking:
+```bash
+UnrealInsights.exe -AutoQuit -NoUI -OpenTraceFile="capture.utrace" \
+  -ExecOnAnalysisCompleteCmd="TimingInsights.ExportTimerStatistics results.csv -region=Wave3 -threads=GPU"
+```
+
+**For the detailed Insights reference, see [Unreal Insights documentation](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-insights-in-unreal-engine) and [the companion Insights deep guide](https://unrealcommunity.wiki/profiling-with-unreal-insights-ilad24y4).**
+
+---
+
+### CSVtoSVG Tool **[UE4 + UE5]**
+
+Epic's `CSVtoSVG` tool converts CSV profiling output (from `-csvprofile` or Gauntlet automation) into SVG charts. Useful for regression tracking across builds in CI pipelines. Located in `Engine/Programs/CSVTools/`.
+
+---
+
+### RenderDoc / PIX / NSight **[UE4 + UE5]**
+
+Enable RenderDoc via Plugins > RenderDoc. Restart editor. A toolbar button appears for frame capture. Inside RenderDoc:
+- Inspect per-draw-call shader source, resource bindings, and output
+- Examine render target contents after each pass
+- Profile with GPU timing overlay
+
+When capturing with D3D12, set `r.ShowMaterialDrawEvents 0` before capture to eliminate GPU marker overhead from skewing timing. Use PIX (Microsoft) or NSight (NVIDIA) when you need warp-level or shader register analysis.
+
+---
+
+### Build Configurations **[UE4 + UE5]**
+
+| Config | Optimization | Logging | Profiling | Use For |
+|---|---|---|---|---|
+| Debug | None | Full | Full | Engine/plugin debugging |
+| DebugGame | Full (engine) | Full | Full | Gameplay debugging |
+| Development | Full | Full | Full | Daily iteration |
+| Test | Full (Shipping) | Configurable | Insights + stat | **Performance profiling** |
+| Shipping | Full | Minimal | None | Release builds |
+
+**Always profile in Test.** It matches Shipping optimizations but retains Insights trace support. In `.Target.cs`:
+```cpp
+if (Target.Configuration == UnrealTargetConfiguration.Test)
 {
-    SCOPE_CYCLE_COUNTER(STAT_ProcessAI);
-    // ...
+    bAllowProfileGPUInTest = true;
+    GlobalDefinitions.Add("ENABLE_STATNAMEDEVENTS=1");
+    GlobalDefinitions.Add("ALLOW_LOW_LEVEL_MEM_TRACKER_IN_TEST=1");
+}
+```
+
+---
+
+### LLM (Low-Level Memory Tracker) **[UE4.20+ expanded in UE5]**
+
+LLM tracks memory at the allocation level, categorized by LLM tags. Enable with `-LLM` on launch. View in Insights (memtag channel) or via `stat LLM` overlay. Define custom tags in C++:
+```cpp
+LLM_DEFINE_TAG(MySystem, NAME_None, NAME_None, GET_STATFNAME(STAT_MySystemLLM), GET_STATFNAME(STAT_MySystemLLM_Summary));
+
+// In code:
+LLM_SCOPE_BYTAG(MySystem);
+```
+LLM has overhead in non-shipping builds. The `memtag` channel in Insights (minimal overhead) is suitable for live monitoring; full `memory` channel is for leak investigation.
+
+---
+
+## Prerequisites for Checkups
+
+Before profiling:
+
+1. **Profile in a Test build** packaged for the target platform, not in Editor PIE.
+2. **Close other applications** consuming CPU or GPU resources (Chrome, Discord, OBS, secondary monitors with heavy compositors).
+3. **Establish a stable 60-second baseline** in a representative gameplay scenario — not the main menu, not a cutscene, but actual gameplay.
+4. **Disable VSync** during CPU/GPU bottleneck investigation (`r.VSync 0`) to see uncapped frame times.
+5. **Profile on target hardware.** Profiling on a developer workstation and shipping on console gives misleading data. Use platform-specific profiling tools for console targets.
+6. **One change at a time.** Make one optimization, measure, compare. Multiple simultaneous changes make it impossible to attribute gains or regressions.
+
+---
+
+## Basic Checkup List **[UE4 + UE5]**
+
+1. Run `stat unit` in a representative play session. Identify the bottleneck thread (Game, Draw, GPU, RHIT).
+2. If GPU-bound: run `ProfileGPU`. Find the most expensive passes. Use View Modes (Shader Complexity, Nanite Overdraw, VSM Visualization) to localize.
+3. If Game Thread-bound: open Insights with `cpu,frame,bookmark` channels. Sort Timers by Exclusive Time. Look for tick-heavy actors, frequent GC passes (`FGarbageCollection`), or expensive physics.
+4. If Render Thread-bound: excessive draw calls (non-Nanite geometry), overdraw from translucency, or high Material/Shader complexity on the Render Thread task list.
+
+---
+
+## Advanced Checkup List **[UE4 + UE5]**
+
+1. **Baseline capture.** Test build, `stat unit` stable, Insights trace running (`cpu,frame,gpu,bookmark`).
+2. **Identify the stack.** Use `stat unit` → Insights flame graph → ProfileGPU in that order. Never jump directly to GPU tooling if the Game Thread is the bottleneck.
+3. **Tick budget audit.** In Insights Timers tab, filter by Game Thread, sort Exclusive Time. Look for `ActorTick`, `ComponentTick`, and custom tick functions above 0.5 ms.
+4. **GC pressure check.** In Insights, look for `FGarbageCollection::Collect` spikes. If GC > 5 ms regularly, audit UObject count (`obj list`), enable clustering, reduce per-frame UObject allocations.
+5. **Memory audit.** `Memreport -full` or Memory Insights with `memory,assetmetadata`. Look for texture pool overrun (`r.Streaming.PoolSize`), unexpected asset loads (check Soft vs Hard references with Size Map).
+6. **Streaming hitch audit.** `stat streaming`. Hitches from streaming = too-large cells, too many actors per cell, or synchronous loads. Use `Trace.RegionBegin/End` around level transitions.
+7. **GPU pass breakdown.** ProfileGPU. Identify top 3 passes by cost. Shadow rendering (VSM, shadow depth) and Lumen Screen Probe Gather are most commonly over-budget.
+8. **Nanite audit [UE5 only].** `stat nanite` + Nanite → Overdraw view mode. Identify overdraw clusters > 4×. Check for Nanite enabled on simple meshes (< 300 triangles).
+9. **Network audit (multiplayer).** `stat net`. Check for excessive bandwidth, actor relevancy overhead, or RPC spam. Enable Networking Insights for packet-level analysis.
+10. **Validate in Shipping build.** Run a final smoke test in Shipping config. Some optimizations that appear in Development (stat display overhead) are not present in Shipping.
+
+**Frame budget targets:**
+
+| Target FPS | Frame budget | Game Thread | Render Thread | GPU |
+|---|---|---|---|---|
+| 60 FPS | 16.7 ms | < 8 ms | < 7 ms | < 16 ms |
+| 30 FPS | 33.3 ms | < 15 ms | < 14 ms | < 33 ms |
+| 120 FPS | 8.3 ms | < 4 ms | < 4 ms | < 8 ms |
+
+These are guidelines — threads run in parallel, so the effective frame time is the maximum of the three, not the sum.
+
+---
+
+## Guidelines per Specialization
+
+### General Tips **[UE4 + UE5]**
+
+- Never optimize without profiling data. Guessing is slower and less reliable than measuring.
+- The 80/20 rule applies: 20% of systems cause 80% of frame budget. Find that 20%.
+- Scalability groups (`sg.ResolutionQuality`, `sg.ShadowQuality`, etc.) are your primary tools for broad platform targeting. Define scalability profiles in `BaseScalability.ini` per quality tier.
+- Console variables (`CVar`) are your primary tuning interface. Expose per-scalability-group CVars in `BaseScalability.ini` rather than hardcoding values.
+- Use Data Assets and Data Tables to externalize configuration. Designers can tune without recompilation.
+- `FAutoConsoleVariableRef` enables any parameter to be live-tuned from the console or `.ini` without recompilation — prefer it over hardcoded constants for tunable systems.
+
+---
+
+### Code and Mechanics (Programmers / Gameplay Engineers) **[UE4 + UE5]**
+
+Gameplay C++ code runs on the Game Thread by default. Every millisecond spent here is a millisecond the renderer waits.
+
+**Common pitfalls:**
+
+- **Raw `UObject*` without `UPROPERTY`** — invisible to GC, will become a dangling pointer when the object is collected. Always use `UPROPERTY()` or `TObjectPtr<>` (UE5). **[UE5 only]**: With incremental GC in 5.4+, raw pointer UPROPERTY members may cause premature collection.
+- **`TWeakObjectPtr::IsValid()` followed by `Get()`** — this checks validity twice (double cache miss into `GUObjectArray`). Use `if (UObject* Obj = Weak.Get()) { ... }` for a single check.
+- **`std::shared_ptr<UObject>`** — GC has no knowledge of shared_ptr ref counts. Use `UPROPERTY` or `TStrongObjectPtr` for UObject lifetime. `TSharedPtr` is for non-UObject types only.
+- **`FName` constructed from string literals in hot paths** — `FName(TEXT("spine_01"))` acquires a thread lock on the global name table every call. Cache as `static const FName`.
+- **Constructing or loading assets in constructors** — constructor runs for the CDO; all instances are copies of the CDO. Never put runtime logic in constructors.
+- **Changing `UPROPERTY` or `CreateDefaultSubobject` names between Live Coding sessions** — corrupts Blueprint assets. Requires full editor restart.
+- **`this` captured in lambda delegates without weak protection** — if the actor is GC'd before the lambda fires, the capture is a dangling pointer. Use `AddWeakLambda` or `MakeWeakObjectPtr`.
+- **`!= nullptr` vs `IsValid()` on UObjects** — a destroyed actor passes `!= nullptr` but fails `IsValid()`. Always use `IsValid()` for destroyed-object guards.
+
+**Recommended practices:**
+
+- Use `TObjectPtr<T>` for all UPROPERTY members in UE5. **[UE5 only]** Zero shipping cost, editor access tracking, incremental GC compatibility.
+- Pre-allocate `TArray` before bulk inserts: `Array.Reserve(ExpectedCount)`.
+- Use `Array.Reset()` instead of `Array.Empty()` when you intend to refill immediately — `Reset()` preserves the heap allocation (sets Num=0, leaves Max unchanged), while `Empty()` frees and reallocates. One allocation vs zero allocations per frame.
+- Use `Array.RemoveAtSwap(Index)` instead of `RemoveAt(Index)` when order does not matter. `RemoveAtSwap` is O(1); `RemoveAt` is O(n).
+- Use `TMap<FName, V>` instead of `TMap<FString, V>` for identifier maps. FName comparison is an O(1) integer compare; FString is O(n).
+- Use `FFastArraySerializer` for arrays replicated over the network — it sends delta updates (changed elements only) instead of the full array every time any element changes.
+- Push Model replication: use `MARK_PROPERTY_DIRTY_FROM_NAME` and `bIsPushBased = true` in `GetLifetimeReplicatedProps`. Properties only replicate when dirty, saving per-frame polling on the server. [UE4.25+]
+- Use `UE::Tasks` (UE5) or `AsyncTask`/`ParallelFor` to move work off the Game Thread. Never read or write UObject properties from worker threads without `FGCScopeGuard`.
+- Use `TStrongObjectPtr` to safely pin UObjects against GC from non-game-thread contexts **[UE5.5+: lighter ref-counted implementation]**.
+- Gate editor-only code with `#if WITH_EDITORONLY_DATA` (data fields) and `#if WITH_EDITOR` (functions).
+- Prefer `FAutoConsoleVariableRef` for tunable parameters — live-tunable from the console or `.ini` without recompilation. For thread-safe reads from worker threads, use `ECVF_RenderThreadSafe`.
+- `UE_LOG` format strings evaluate even in Development — wrap expensive log output in `#if !UE_BUILD_SHIPPING`.
+
+**Threading and async systems [UE5 only]:**
+
+```cpp
+// UE::Tasks — preferred modern async API:
+UE::Tasks::Launch(UE_SOURCE_LOCATION, []() {
+    // background work — no UObject access here
+}, UE::Tasks::ETaskPriority::BackgroundNormal);
+
+// FGCScopeGuard — prevents GC during worker UObject access:
+{
+    FGCScopeGuard GCGuard;
+    MyUObject->DoReadOnlyThing();
 }
 
-// Scope visible in the Insights flame graph:
-TRACE_CPUPROFILER_EVENT_SCOPE_STR("MySystem::HeavyUpdate");
+// TStrongObjectPtr for thread-safe UObject lifetime pinning:
+TStrongObjectPtr<UMyObject> PinnedObject(MyObject);
+AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [PinnedObject]() {
+    PinnedObject->DoWork();
+});
+
+// Marshal results back to the GameThread:
+AsyncTask(ENamedThreads::GameThread, [Result]() {
+    // Apply results to UObjects here
+});
 ```
 
-`SCOPED_NAMED_EVENT` adds ~20% frame overhead — use it only in targeted sessions, never as permanent production code ([Tom Looman — Adding Counters & Traces](https://tomlooman.com/unreal-engine-profiling-stat-commands/)).
-
----
-
-## Part 1: Level Design and Environment
-
-### Nanite — When It Helps, When It Hurts
-
-Nanite virtualizes geometry, eliminating manual LOD management. However, it is not a free resource and has specific break-even conditions.
-
-#### Nanite Is Not Free on Simple Meshes
-
-Nanite organizes triangles into clusters and has a fixed per-frame entry cost (overhead) that only pays off with sufficiently complex geometry. Enabling Nanite on a mesh with 8–64 triangles can cost as much as the entire Nanite pass for a richly detailed level. In production tests, disabling Nanite on a handful of simple meshes yielded a ~3 ms gain in the Nanite pass — with zero visual difference ([r/UnrealEngine5, 2025](https://www.reddit.com/r/UnrealEngine5/comments/1ot0ms4/nanite_warning_lower_performance_with_simples/)). The rule: meshes with fewer than ~300 triangles, or purely flat primitives, should use traditional LODs and ISM (Instanced Static Mesh).
-
-#### Overlapping Geometry — Nanite's Enemy
-
-Nanite attempts to determine which triangles are visible. When geometry layers overlap densely (e.g. thick foliage, tightly packed rocks), Nanite renders all overlapping triangles "just in case." The result is extreme overdraw, visible as white-to-yellow areas in the `r.Nanite.Visualize Overdraw` mode. Epic directly addresses this problem in [Nanite for Artists | GDC 2024](https://www.youtube.com/watch?v=eoxYceDfKEM) — alpha-card foliage is a worse case than dense rock formations, because leaves overlap across dozens of layers.
-
-The key CVar for controlling cluster density:
-```ini
-r.Nanite.MaxPixelsPerEdge 2   ; higher = fewer clusters, cheaper at the cost of detail
-```
-
-Values of 2–4 on low/medium settings deliver major savings with minimal visual regression ([Intel UE5 Optimization Guide](https://www.intel.com/content/www/us/en/developer/articles/technical/unreal-engine-optimization-chapter-2.html)).
-
-#### Nanite + Masked Materials / WPO — A Double Hit
-
-Nanite with a Masked material or World Position Offset (WPO) requires the Programmable Rasterizer (software path) instead of the fast hardware raster — this is 2 to 4x more expensive than opaque Nanite. In UE5.4, dramatic FPS drops were reported with foliage (Nanite Masked + WPO), primarily due to a spike in Shadow Depths cost (VSM) ([Epic Forums, 2024](https://forums.unrealengine.com/t/bad-performance-with-nanite-masked-wpo-in-ue5-4-2/1906424)).
-
-One of the most common mistakes when importing Megascans foliage — it automatically has Nanite enabled and a masked material. Solutions:
-- Disable "Evaluate World Position Offset" for foliage shadows in the Static Mesh Editor (Details → Shadow → Evaluate World Position Offset = Off).
-- Set `WPO Disable Distance` on the static mesh (e.g. 30 m for small plants, 80 m for trees) — Nanite won't spend time evaluating WPO for distant objects.
-- For best results: model leaves as opaque full geometry instead of alpha cards.
-
-```ini
-; Per-mesh in Static Mesh Editor:
-; Shadow → Evaluate World Position Offset = Off (for foliage shadows)
-```
-
-Source: [Intel UE5 Optimization Guide Ch.2](https://www.intel.com/content/www/us/en/developer/articles/technical/unreal-engine-optimization-chapter-2.html)
-
-#### Nanite Fallback Mesh — The Forgotten Landmine
-
-Every mesh with Nanite enabled must have a fallback mesh — a simplified version used by collisions, Lumen Hardware RT (BLAS), and platforms without Nanite support. By default, UE generates a high-poly fallback. If `Fallback Relative Error = 0`, the fallback will be identical to the original.
-
-In projects with many unique meshes, fallback meshes can occupy 100–400 MB of VRAM ([Epic Forums, 2025](https://forums.unrealengine.com/t/nanite-fallback-mesh-buffers-vram-residence/2563974)).
-
-```ini
-; Per-mesh in Static Mesh Editor:
-Fallback Triangle Percent = 1-5%   ; aggressive reduction
-Fallback Relative Error = 1.0      ; large silhouette deviation allowed (small mesh)
-
-; Project-wide (cook), UE5.5+:
-[/Script/WindowsTargetPlatform.WindowsTargetSettings]
-bGenerateNaniteFallbackMeshes=False   ; strip all fallbacks from the cook entirely
-```
-
-When to use: set `Fallback Relative Error` to ~1.0 for background decorative meshes. Verify visually in non-Nanite mode that the silhouette is acceptable.
-
-#### Nanite Tessellation / Displacement
-
-Nanite Tessellation (production-ready from UE5.4) is real-time dynamic tessellation — visually impressive, but expensive, as it runs through the software raster path. Across an entire terrain and many scene meshes it can double the Nanite pass time. Use it selectively on hero assets and key terrain features ([An Artist's Guide to Nanite Tessellation | Unreal Fest 2024](https://www.youtube.com/watch?v=6igUsOp8FdA)).
-
-```ini
-r.Nanite.Tessellation=1
-r.Nanite.AllowTessellation=1
-r.Nanite.DicingRate=2   ; default 2px — higher = less dense, cheaper
-                        ; recommended 4-8 for background, 1-2 for hero props (GDC 2024)
-```
-
-#### Nanite Foliage — Opaque Geometry Is the Right Path
-
-Traditional foliage with alpha cards (alpha-tested Masked) remains difficult for Nanite. The modern approach: model leaves as opaque full geometry. Nanite with the `Preserve Area` flag is required to maintain foliage silhouettes at large distances. From UE5.5, experimental Nanite Skeletal Mesh is also available — in tests with 500 animated characters it raised FPS from ~22 to ~55–60 ([The Future of Nanite Foliage | Unreal Fest Stockholm 2025](https://www.youtube.com/watch?v=aZr-mWAzoTg)).
-
-#### When Traditional LODs Are Better Than Nanite
-
-| Situation | Recommendation |
-|---|---|
-| Meshes < 300 triangles (simple cube, plane) | Traditional LOD / ISM |
-| Meshes with Masked material and WPO (grass, leaves) | Traditional LOD or opaque Nanite geometry |
-| Skeletal meshes (UE5.4 and older) | Traditional LOD (Nanite SK experimental from 5.5) |
-| Translucent geometry (glass, water) | Traditional — Nanite does not support translucency |
-| Mixed Nanite + non-Nanite scene | Maximize Nanite coverage — mixing increases overhead on both paths |
-
----
-
-### World Partition — Production Pitfalls
-
-World Partition (WP) is UE5's open-world system. It brings many benefits but hides an equal number of traps.
-
-#### HLOD — Generation Pitfalls
-
-HLOD (Hierarchical LOD) in World Partition consists of meshes/impostors rendered for distant streaming cells. The default configuration "Lowest Available LOD" for landscape makes HLODs look like grey blobs. Overly aggressive decimation destroys the quality of distant terrain ([r/unrealengine 2024](https://www.reddit.com/r/unrealengine/comments/1efsgdh/how_come_world_partition_landscape_is_so/)).
-
-```ini
-; In World Settings → Runtime Partitions → HLOD Setups:
-; INDEX [0] — HLODLayer_Instanced: set Loading Range to cover mountains
-; INDEX [1] — HLOD Merged: set Specific LOD = 4-5 instead of "Lowest Available"
-```
-
-Trick: for Nanite meshes, set HLOD Layer Type = Instanced (no decimation) — meshes stream faster through instancing, and Nanite handles the detail.
-
-#### Data Layers vs Level Instances — Which to Use When
-
-Two fundamentally different concepts, often confused. Data Layers are logical groups of actors inside a single WP level, loaded/unloaded independently of spatial streaming. Level Instances are nested levels that can be standalone or embedded (unpacked at cook time with no runtime overhead).
-
-Pitfalls:
-- Runtime Data Layers are NOT compatible with Level Instances — you cannot place a Level Instance inside an External Data Layer ([xbloom.io WP Internals](https://xbloom.io/2025/10/24/unreals-world-partition-internals/)).
-- Too many overlapping Data Layers + Runtime Grids produces a combinatorial explosion of streaming cells.
-
-| Use Case | Solution |
-|---|---|
-| DLC / seasonal content | External Data Layer (EDL) — content in a separate plugin |
-| Game state (peaceful village vs. raided) | Runtime Data Layer |
-| Repeating POIs (gas stations, houses) | Level Instance → Packed Level Actor |
-| Modular building in multiple locations | Level Instance + Embedded (no runtime overhead) |
-
-Source: [StraySpark WP Deep Dive](https://www.strayspark.studio/blog/ue5-world-partition-deep-dive-streaming-hlod)
-
-#### One-File-Per-Actor (OFPA) — Source Control Pitfalls
-
-OFPA stores each actor as a separate file in the `__ExternalActors__` folder. With non-Perforce VCS (Git LFS, SVN), conflicts are harder to resolve. New actors added to a level still modify the main `.umap` file, not just the actor file. Auto-Save can generate thousands of changes in `ExternalActors` simultaneously.
-
-Best practices:
-- Disable Auto-Save (Edit → Editor Preferences → Loading & Saving) for large WP scenes.
-- Before renaming folders containing OFPA data: check and update all references first.
-- Use the diagnostic tool to debug streaming:
-
-```
-wp.Editor.DumpStreamingGenerationLog
-; Output in: Saved/Logs/WorldPartition/
-```
-
-Source: [Epic Forums OFPA Best Practices](https://forums.unrealengine.com/t/tips-and-best-practices-for-one-file-per-actor/837886)
-
-#### Runtime Streaming Grid
-
-The default 128 m (12800 cm) works for most cases, but dense urban environments need 64 m, and sparse terrain benefits from 256 m ([StraySpark Blog](https://www.strayspark.studio/blog/ue5-world-partition-deep-dive-streaming-hlod)).
-
-```ini
-RuntimeGrid.CellSize=12800     ; 128 meters (value in cm!)
-RuntimeGrid.LoadingRange=25600 ; 256 meters = 2x Cell Size
-```
-
-Trick: for fast vehicles or flight, add a predictive streaming source based on the player's velocity vector to pre-load 1–2 cells ahead. The default Streaming Source (player controller) is purely reactive.
-
-Watch out for large actors that span more than one cell size (churches, bridges) — they are "promoted" to a higher grid level and may load independently of normal cells.
-
----
-
-### Lumen — Tuning GI and Reflections
-
-Lumen is UE5's global illumination (GI) and reflections system. It works well out of the box, but the default settings are calibrated for high-end benchmark hardware.
-
-#### Hardware vs Software Lumen
-
-| Aspect | Software Lumen (SW RT) | Hardware Lumen (HW RT) |
+| System | Best For | Notes |
 |---|---|---|
-| Requirements | Distance Fields (DF) on all meshes | RT-capable GPU (DXR/Vulkan RT) |
-| Reflections | Surface Cache (less accurate) | Hit Lighting = full material evaluation |
-| Skinned Meshes | Not lit | Lit (GI on characters) |
-| Far Field (>1 km) | No | Yes (uses HLOD1) |
-| Thin objects (< 4 cm) | Excluded from Surface Cache | Better support |
+| `UE::Tasks` (UE5 new API) | Dependent task graphs, modern C++ | Cleaner API; same backend as TaskGraph |
+| `TaskGraph` (`FFunctionGraphTask`) | Legacy code, dependent graphs | Being replaced by `UE::Tasks` |
+| `AsyncTask` / `Async()` | Fire-and-forget background work | `EAsyncExecution::Thread` = dedicated OS thread |
+| `FRunnable` / `FRunnableThread` | Long-lived, persistent background threads | Higher overhead; prefer for continuous systems |
+| `ParallelFor` | Data-parallel loops | Avoid TMap writes inside the body |
 
-When to use Software: console games, broad platform support. When to use Hardware: archviz, scenes with many mirror-like reflections, cinematic animations with Metahuman GI.
+Use `FCriticalSection` + `FScopeLock` (not `std::mutex`). Use `FRWLock` when reads significantly outnumber writes.
 
-Source: [NVIDIA UE5.4 RT Guide](https://dlss.download.nvidia.com/uebinarypackages/Documentation/UE5+Raytracing+Guideline+v5.4.pdf)
-
-#### Surface Cache Invalidation — "Pink Patches"
-
-The Lumen Surface Cache is a set of cards (Lumen Cards) generated for each mesh. When a card is out of date or missing, the area glows pink in the Surface Cache visualization. An object must be at least ~4 cm in size to make it into the Surface Cache. Yellow objects in GI = culled (too distant or too small) ([Epic Forums Surface Cache thread](https://forums.unrealengine.com/t/lumen-surface-cache-scale-woes/2669365)).
-
-Trick: build modularly — the interior of a building as separate meshes (walls, floor, ceiling), not one blended mesh. A single large "building" mesh will not generate correct cards for the interior, causing pink GI artifacts inside ([Unreal Fest Gold Coast 2024](https://www.youtube.com/watch?v=szgnZx2b0Zg)).
-
-```ini
-; Diagnostics:
-; Lumen → Surface Cache (viewport mode)
-; Lumen → Card Placement (r.Lumen.Visualize.CardPlacement)
-
-; Increase cards per object (Static Mesh Editor → Build Settings → Num Lumen Mesh Cards = 6-12)
-r.LumenScene.SurfaceCache.MeshCardsMinSize=4   ; default 4 (cm)
-r.LumenScene.SurfaceCache.CardMinResolution=4
-; For emissive objects that must always stay in cache:
-; Check "Emissive Light Source" on the actor — prevents culling
+**FAutoConsoleVariableRef pattern:**
+```cpp
+namespace MySystem
+{
+    static float CollisionRadius = 120.f;
+    static FAutoConsoleVariableRef CVar_CollisionRadius(
+        TEXT("my.CollisionRadius"),
+        CollisionRadius,
+        TEXT("Radius used by proximity check system"),
+        ECVF_Scalability
+    );
+}
 ```
 
-#### Lumen CVars Worth Knowing
+**Push Model replication code:**
+```cpp
+// GetLifetimeReplicatedProps:
+FDoRepLifetimeParams Params;
+Params.bIsPushBased = true;
+DOREPLIFETIME_WITH_PARAMS_FAST(AMyActor, Health, Params);
 
-```ini
-; GI quality — ScreenProbeGather
-r.Lumen.ScreenProbeGather.TracingOctahedronResolution=2
-r.Lumen.ScreenProbeGather.DownsampleFactor=2              ; lower GI resolution = large gains
-r.Lumen.ScreenProbeGather.IntegrateDownsampleFactor=2     ; UE5.6: ~3x faster, ~0.3-0.5ms
-
-; Reflections
-r.Lumen.Reflections.DownsampleFactor=2      ; saves 1-2ms
-r.Lumen.Reflections.MaxRoughnessToTrace=0.4 ; only shiny materials receive RT reflections
-
-; Far Field (open worlds, HWRT)
-r.LumenScene.FarField=1
-r.LumenScene.FarField.OcclusionOnly=1       ; UE5.6: ~50% cheaper Far Field
-
-; Firefly suppression (UE5.6 default)
-r.Lumen.ScreenProbeGather.MaxRayIntensity=10  ; more aggressive clamping
+// Setter — MARK_PROPERTY_DIRTY on every change:
+void AMyActor::SetHealth(float NewHealth)
+{
+    Health = NewHealth;
+    MARK_PROPERTY_DIRTY_FROM_NAME(AMyActor, Health, this);
+}
 ```
 
-Source: [StraySpark Lumen 60fps Guide](https://www.strayspark.studio/blog/ue5-lumen-optimization-60fps), [Tom Looman UE5.6 Highlights](https://tomlooman.com/unreal-engine-5-6-performance-highlights/)
+**Lambda delegate safety patterns:**
+```cpp
+// DANGEROUS: 'this' captured raw in a timer lambda:
+GetWorldTimerManager().SetTimer(Handle, [this]() { DoThing(); }, 1.f, false);
 
-#### Lumen + Emissive — Limitations
+// SAFE — AddWeakLambda:
+SomeDelegate.AddWeakLambda(this, [this]() { DoThing(); });
 
-Emissive lighting through Lumen is still marked experimental. When the camera cuts or a scene is freshly loaded, Lumen must recompute GI from scratch — a noticeable delay / flickering is visible for 0.5–2 seconds. Workaround: for critical emissive light sources, add a Point/Spot Light with Cast Shadows disabled as a backup. The emissive controls appearance; the light actor drives GI ([Unreal Fest Gold Coast 2024](https://www.youtube.com/watch?v=szgnZx2b0Zg)).
+// SAFE — explicit weak pointer:
+auto WeakThis = MakeWeakObjectPtr(this);
+GetWorldTimerManager().SetTimer(Handle, [WeakThis]() {
+    if (WeakThis.IsValid()) WeakThis->DoThing();
+}, 1.f, false);
+```
 
-#### Baked Lighting — When It Still Makes Sense
+**TWeakObjectPtr hot-path optimization:**
+```cpp
+// BAD: checks validity 3 times:
+if (WeakPtr.IsValid()) { UObject* Obj = WeakPtr.Get(); if (IsValid(Obj)) ... }
 
-Lumen and baked lighting cannot coexist in UE5. However, baked GPU Lightmass still makes sense in tight corridors and interiors without dynamic objects (quality above 40 FPS cost), or on older platforms. A hybrid technique without Lumen: static lights for background, Moveable only for dynamic sources (flashlight, fire).
+// GOOD: single dereference with null check:
+if (UObject* Obj = WeakPtr.Get()) { Obj->Foo(); Obj->Bar(); }
+```
+
+**Lesser-known tricks:**
+
+- `TInlineAllocator<N>` keeps small arrays on the stack. Pass to functions via `TArrayView<T>` to preserve type compatibility.
+- `FObjectInitializer::DoNotCreateDefaultSubobject(TEXT("CompName"))` in derived class constructors suppresses a parent's default subobject.
+- GC clustering (`gc.AssetClusteringEnabled 1`) can cut GC marking time by 50%+ for clustered assets. Enable BP clustering in Project Settings > Engine > Garbage Collection.
+- `tick.AllowBatchedTicks` **[UE5.5+]** — groups similar tick functions and dispatches as batches to the Task Graph, reducing per-tick overhead.
+- `GameplayDebugger` module — overlay runtime debug data in-game without polluting shipping code. Gate with `#if WITH_GAMEPLAY_DEBUGGER`.
+- `MarkPendingKill` API is deprecated in UE5. Use `MarkAsGarbage()` and test with `IsValid()` or `IsGarbage()`.
+- `FStringView` (UE5): a non-owning view over an existing string buffer. Use it as the parameter type in functions to prevent implicit `FString` copies.
+- Keep the live UObject count below ~200k as a good general practice. `gc.CreateGCClusters 1` on data assets.
+
+**Tools for this role:**
+`stat unit`, Insights (cpu,frame), `Memreport -full`, Memory Insights
+
+**CVars cheat sheet:**
+
+| CVar | Default | Purpose | Engine |
+|---|---|---|---|
+| `gc.TimeBetweenPurgingPendingKillObjects` | 60 | Seconds between GC passes | UE4 + UE5 |
+| `gc.MaxObjectsNotConsideredByGC` | 0 | Objects above this index skipped in marking | UE4 + UE5 |
+| `gc.AssetClusteringEnabled` | 1 | GC clustering for assets | UE4 + UE5 |
+| `tick.AllowBatchedTicks` | 0 | Batch similar tick functions | UE5.5+ |
+| `net.Iris.UseIrisReplication` | 0 | Enable Iris replication system | UE5.4+ |
 
 ---
 
-### Virtual Shadow Maps
+### Blueprint Scripters **[UE4 + UE5]**
 
-Virtual Shadow Maps (VSM) is the shadow system in UE5 — conceptually a 16k×16k shadow per light, divided into 128×128 px pages.
+Every Blueprint node is a bytecode instruction interpreted by the VM. The VM overhead is real but manageable — 300 nodes executing once per event is often cheaper than 3 nodes executing every frame. Profile before rewriting Blueprints to C++.
 
-#### Page Pool — The Most Common Mistake
+**Common pitfalls:**
 
-All active pages live in a single `page pool` texture. The default size of 4096 pages (256 MB) is appropriate for linear games, but far too small for open-world projects with World Partition. An overflowed page pool produces visible stippling patterns in shadows when rotating the camera, with warnings in `stat VirtualShadowMapCache` ([StraySpark VSM Deep Dive](https://www.strayspark.studio/blog/virtual-shadow-map-optimization-open-worlds-ue5-7)).
+- **Tick enabled on every actor by default** — "Start with Tick Enabled" is checked by default. 200 actors with empty ticks = 200 per-frame VM dispatches. Uncheck in Class Defaults for every actor that doesn't need per-frame updates.
+- **`Get All Actors Of Class` called in Tick or frequently** — iterates the entire World actor list, building a new `TArray` on every call. Catastrophically expensive. Use a manager/subsystem registration pattern instead.
+- **Hard reference casts everywhere** — `Cast To BP_PlayerCharacter` placed in a UI widget loads the entire player character class (and every asset it references) into memory when the widget loads. One stray cast can add hundreds of MB of unexpected memory.
+- **Pure functions wired to multiple nodes** — a pure function (green node, no exec pin) re-evaluates for every output consumer. Expensive computation wired to 3 nodes runs 3 times. Convert to impure (non-pure) and cache the result.
+- **`ForEachLoop` without break for search** — always iterates the full array. Use `ForEachLoopWithBreak` and wire the Break pin.
+- **Spawning actors in Construction Script** — runs every time any property changes in the editor. Orphaned actors accumulate. Use Child Actor Components or spawn in BeginPlay.
+- **Missing `Replicates = true`** in Class Defaults for networked actors — no variables replicate, no RPCs execute on remote machines.
+- **`Make Array` inside Event Tick** — heap allocation every frame, GC pressure. Pre-allocate as a member variable.
+- **`Delay` for cancellable timed logic** — cannot be cancelled. Use `Set Timer by Event` with a stored handle.
+- **`Sequence` node misused for deferred work** — all outputs fire synchronously in the same frame; it does not spread work over time.
 
-```ini
-[/Script/Engine.RendererSettings]
-; Open world PC/next-gen:
-r.Shadow.Virtual.MaxPhysicalPages=8192   ; 512 MB
+**Recommended practices:**
 
-; Steam Deck / low-end PC:
-r.Shadow.Virtual.MaxPhysicalPages=4096
-```
-
-Diagnostics:
-```
-stat VirtualShadowMapCache             ; look for "Physical page pool overflow"
-r.Shadow.Virtual.Cache.DrawInvalidatingBounds 1  ; green boxes = what's invalidating the cache
-r.Shadow.Virtual.Visualize 1          ; mode 2 = Page Allocation (green = cached, red = new)
-```
-
-#### Foliage + VSM — WPO Shadow Cost
-
-The most impactful VSM optimization in foliage-heavy scenes: disable WPO evaluation for shadows on small vegetation. Players cannot tell that grass shadows aren't swaying. In a PS5 test, disabling WPO shadow for floor foliage reduced the cost from 8.2 ms to 3.1 ms. One checkbox ([StraySpark VSM Blog](https://www.strayspark.studio/blog/virtual-shadow-map-optimization-open-worlds-ue5-7)).
-
-```ini
-; Per-mesh or Foliage Type:
-; Details → Rendering → Evaluate World Position Offset (Shadow) = Off
-
-; CVar for non-Nanite foliage in coarse pages:
-r.Shadow.Virtual.NonNanite.IncludeInCoarsePages=0
-
-; Page recycling during fast WP streaming:
-r.Shadow.Virtual.Cache.MaxFramesSinceLastUsed=20  ; default 60
-
-; Cheaper new pages during camera movement:
-r.Shadow.Virtual.Clipmap.ResolutionLodBiasDirectionalMoving=0.5
-
-; Async compute (hides ~0.4ms):
-r.Shadow.Virtual.UseAsync=1
-```
-
-#### VSM + Many Small Dynamic Lights
-
-VSM generates a separate page pool for each local light. Many small Point Lights with Cast Shadows is catastrophic for performance — each one must maintain its own set of shadow pages. VSM is optimized for a directional light (sun) plus a few key lamps.
-
-Trick: use a shadowless Point Light for ambient fill, plus one stronger light with shadows for hero props. In UE5.4+, MegaLights are available — designed for very large numbers of dynamic shadow-casting sources at a reasonable cost.
-
-Clipmap tuning for directional light:
-```ini
-r.Shadow.Virtual.Clipmap.FirstLevel=6    ; default — finest level
-r.Shadow.Virtual.Clipmap.LastLevel=20    ; reduce from 22 if you have horizontal fog
-r.Shadow.Virtual.ResolutionLodBiasDirectional=0   ; 0 = full resolution (PC)
-```
-
----
-
-### Occlusion and Culling
-
-Culling determines which objects reach the renderer at all. A well-configured culling setup reduces draw calls before the GPU ever sees them.
-
-#### HZB Occlusion (Hierarchical Z-Buffer)
-
-HZB is GPU-side dynamic occlusion culling — it checks whether an object's bounding box is hidden by depth data from the previous frame. Cheap for GPU-bound scenes, but introduces a "1-frame lag" in occlusion culling (ghost geometry during fast camera movement) ([YouTube: Culling & Occlusion in Unreal (2025)](https://www.youtube.com/watch?v=wOdpF4WMckE)).
-
-```ini
-r.HZBOcclusion=1       ; default 1 (enabled)
-; Set to 0 to disable and test — if disabling improves stability,
-; there is likely an HZB bug in that particular scene
-```
-
-#### Precomputed Visibility — Still Useful
-
-Precomputed Visibility generates baked occlusion culling for enclosed environments (dungeons, interiors, corridors). It does not scale to open-world, but in corridors and rooms it reduces draw calls by 50–90% at near-zero CPU cost ([Epic Docs: Visibility and Occlusion Culling](https://dev.epicgames.com/documentation/unreal-engine/visibility-and-occlusion-culling-in-unreal-engine)).
-
-Setup: enable `Enable Precomputed Visibility` in World Settings → place a `Precomputed Visibility Volume` → Rebuild Lighting or `Build → Precompute Static Visibility`.
-
-When to use: excellent for dungeons, building interiors, and any enclosed spaces in indie games where open-world streaming is not needed.
-
-#### Cull Distance Volumes
-
-Cull Distance Volumes define culling distances for actors of a given size — for example, "cull objects with a bounding box < 50 cm after 20 m from camera." CPU-side culling = cheap. Excellent for dense interiors filled with small props.
-
-Setup: drag a `Cull Distance Volume` into the scene → set the `Cull Distances` array: `[Size, Distance]` e.g. `[50, 2000]`. Use the `G` key (Game View) in the editor to see what is currently culled.
-
-#### HISM vs ISM in the Nanite Era
-
-In UE5 with Nanite, the instancing approach changes. HISM (Hierarchical Instanced Static Mesh) provides a hierarchical structure for CPU-side LOD and culling — useful for non-Nanite geometry. Plain ISM without a hierarchy is recommended for Nanite meshes, because Nanite moves LOD and culling to the GPU, making the HISM hierarchy redundant and wasteful of CPU time ([Epic Forums: When to Use Level Instance, PLA, ISM/HISM](https://forums.unrealengine.com/t/when-to-use-level-instance-packed-level-actor-or-ism-hism-in-ue5/2681508)).
-
-- Nanite meshes → ISM (or Runtime Cell Transformer with automatic batching)
-- Non-Nanite foliage / decorations → HISM (hierarchical LOD and occlusion)
-
----
-
-### Level Workflow: Level Instances, ISM/HISM, FastGeo
-
-#### Level Instances and Packed Level Actors
-
-A Level Instance (LI) is a nested level used multiple times. A Packed Level Actor (PLA) is a Blueprint generated from an LI where all identical meshes are batched as ISM. A PLA with 20 instances of the same model = one draw call via ISM. Without PLA = 20 draw calls ([KitBash3D Guide](https://help.kitbash3d.com/en/articles/12038349-a-quick-guide-packed-level-actors-level-instancing-in-unreal-engine-with-kitbash3d)).
-
-| | Level Instance | Packed Level Actor |
-|---|---|---|
-| Contents | Anything (light, blueprint, mesh) | Visual only (static meshes) |
-| Batching | No automatic batching | Automatic ISM for repeated meshes |
-| Gameplay logic | Yes | No (do not use for gameplay) |
-| Editability | In-place (embedded) | Via editing the base LI |
-
-#### Runtime Cell Transformers — Automatic ISM Batching
-
-Runtime Cell Transformers (RCT, UE5.5) collect all immutable (unreferenced, static mobility) meshes in the same cell and group them under a single ISM component. Works automatically at cook time and in PIE with no manual art work required ([Epic Forums](https://forums.unrealengine.com/t/when-to-use-level-instance-packed-level-actor-or-ism-hism-in-ue5/2681508)).
-
-Rule: make sure decorative static meshes are set to Static mobility and have no direct references from other actors — RCT can then batch them automatically.
-
-#### FastGeo Plugin (UE5.6, Experimental)
-
-FastGeo replaces static mesh actors with lighter instances, reducing the runtime UObject count. Do not use it on actors with gameplay logic — mark those objects with the `NoFastGeo` tag.
-
----
-
-## Part 2: Blueprints
-
-### Tick: The Biggest Performance Killer
-
-Every Blueprint Actor has "Start with Tick Enabled" on by default. In a scene with 200 actors that have Event Tick wired up — even to a single Branch node — you pay for 200 per-frame virtual dispatch calls. According to [Outscal's Timers vs Tick guide](https://outscal.com/blog/unreal-engine-timers-vs-tick), this single practice delivers the most consistent performance gains of any Blueprint optimization.
-
-Core rules:
-
-- In Class Defaults → Actor Tick → Start with Tick Enabled: uncheck for every actor that does not need per-frame updates.
-- Use `Set Actor Tick Enabled` (or `Set Component Tick Enabled`) to enable tick only when required.
-- In C++: `PrimaryActorTick.bCanEverTick = false;` in the constructor as the default.
-- For logic running every 100–200 ms (AI perception, health regen checks): set Tick Interval (secs) to e.g. `0.1`. Do not set it lower than `0.05` — you may execute Tick multiple times per frame and lose all the savings ([CBgameDev tick optimization guide](https://www.cbgamedev.com/blog/quick-dev-tip-74-ue4-ue5-optimising-tick-rate)).
-
-An important initialization sequence pitfall — the correct way to control tick at runtime:
+- Disable tick by default in Class Defaults. Enable via `Set Actor Tick Enabled` only when needed, disable again when no longer needed. The correct C++ initialization sequence:
 
 ```cpp
 // C++ — must be false at construction time:
@@ -417,95 +622,27 @@ void AMyActor::BeginPlay()
 
 Getting the order wrong can cause `SetActorTickEnabled(false)` in BeginPlay to be overwritten by the actor initialization sequence ([Epic Forums — SetActorTickEnabled bugged](https://forums.unrealengine.com/t/setactortickenabled-bugged/357835)).
 
-UE5.5 adds the `tick.AllowBatchedTicks` CVar — when enabled, the engine groups similar tick functions and dispatches them to the Task Graph as batches, reducing per-tick overhead for actors with many instances ([Tom Looman — UE 5.5 Performance Highlights](https://tomlooman.com/unreal-engine-5-5-performance-highlights/)).
-
----
-
-### Events Instead of Polling
-
-The classic polling anti-pattern:
-```
-Event Tick → Branch (Is Health <= 0?) → [true] Trigger Death
-```
-This runs even when health = 100%.
-
-The correct approach: call `[HealthChanged Dispatcher]` only when health actually changes. Interested actors bind once in BeginPlay and react only when they receive a notification. This is architecturally the Observer pattern.
-
-Full mechanism selection table:
+- Set `Tick Interval (secs)` for actors that need periodic but not per-frame updates (AI checks, regeneration, proximity queries). 0.1s = 10 ticks/second. Don't set below 0.05s — may fire multiple times per frame at high framerates ([CBgameDev tick guide](https://www.cbgamedev.com/blog/quick-dev-tip-74-ue4-ue5-optimising-tick-rate)).
+- Replace Tick polling with Event Dispatchers. A dispatcher fires only when state changes; a Tick check fires every frame regardless. This is architecturally the Observer pattern.
+- Event mechanism selection:
 
 | Mechanism | Direction | Coupling | Use Case |
 |---|---|---|---|
-| Event Dispatcher | One → Many (broadcast) | Loose (sender doesn't know listeners) | Score updates, player death, level events |
-| Blueprint Interface (BPI) | One → One/Many (message) | Loose (caller doesn't know receiver type) | "Can this actor be interacted with?" |
-| Direct Cast | One → One | Tight (hard reference, memory inflation) | Internal communication within the same module |
+| Event Dispatcher | One → Many (broadcast) | Loose | Score updates, player death, level events |
+| Blueprint Interface (BPI) | One → One/Many (message) | Loose | "Can this actor be interacted with?" |
+| Direct Cast | One → One | Tight (hard reference) | Internal communication within the same module |
 
-Key interface pitfall: if an interface function takes or returns a typed Blueprint class as a parameter, the Blueprint VM still loads that class into memory. The escape is to use more general base types ([Reddit hard/soft ref thread](https://www.reddit.com/r/unrealengine/comments/1bqbhwi/about_hard_and_soft_references/)).
+- Use Blueprint Interfaces (BPI) for loose coupling instead of hard casts. **Important nuance**: if the interface function parameter type is a specific Blueprint class, that class still loads into memory. Use base types (Actor, Pawn) as parameter types to maintain the memory escape.
+- Cache costly Blueprint operations (component gets, cast results) in member variables. One cast in BeginPlay is fine. A cast in Tick is not.
+- Use `Validated Get` (right-click any variable → Convert to Validated Get) instead of the Is Valid + Branch + Get triple pattern. Same result, 3 fewer nodes, one `Is Valid` and `Is Not Valid` exec output.
+- `Set Timer by Event` instead of `Delay` for cancellable timed logic. Delay cannot be cancelled; if the actor is destroyed mid-delay, the resumed execution crashes on a dead object.
+- Use **Soft Object References** (`TSoftObjectPtr`) for assets that should load on demand. Combine with `Async Load Asset` and wire the result into a Cast. The cast is only reached after successful load — no premature memory inflation.
+- Use `Size Map` (right-click asset → Size Map) regularly to audit reference footprint. Run it on UI Blueprints and GameInstance — these are the most common culprits for unexpected memory chains ([Tom Looman optimization talk](https://tomlooman.com/unreal-engine-optimization-talk/)).
+- **Blueprint Nativization is gone in UE5.** **[Deprecated in UE5]**: Removed in UE5.0. The modern alternative is C++ Blueprint Function Libraries (`UFUNCTION(BlueprintCallable)`) for hot computation. Epic's benchmarks show C++ tight loops run ~800× faster than equivalent Blueprint loops for math workloads ([Tom Looman benchmarks](https://www.youtube.com/watch?v=Z5pKkBNEyc0)).
+- Use `UGameInstanceSubsystem` for global events and manager state. Persists across level transitions; avoids `Get All Actors Of Class` for manager lookups. Place global game events (currency change, pause) as Event Dispatchers on a `UGameInstanceSubsystem` — any Blueprint can bind without Tick and survives level transitions ([Global EventDispatchers](https://forums.unrealengine.com/t/global-eventdispatchers-in-gameinstance/485353)).
+- Mark DataTable rows as `Primary Assets` and load via Asset Manager. Enables async loading and bundle-based streaming (load only the "UI" bundle for shop menus, full "Actor" bundle when spawning) ([Tom Looman Asset Manager guide](https://tomlooman.com/unreal-engine-asset-manager-async-loading/)).
 
-Game Instance Dispatcher pattern: place global game events (currency change, pause) as Event Dispatchers on a `UGameInstanceSubsystem` (C++) or directly on the GameInstance Blueprint. Any Blueprint can bind without Tick and survives level transitions ([Global EventDispatchers in GameInstance](https://forums.unrealengine.com/t/global-eventdispatchers-in-gameinstance/485353)).
-
-Tick Groups — if Actor B reads a position set by Actor A, and both are in the same tick group, order is non-deterministic. Use `Add Tick Prerequisite Actor` sparingly — prerequisites trigger a TArray sort every frame in the worst case ([Epic Forums: Tick Group vs Tick Prerequisite](https://forums.unrealengine.com/t/tick-group-vs-tick-prerequisite/1728813)).
-
----
-
-### Casting Pitfalls
-
-**This is the most important memory concept in Blueprint development.**
-
-When you place `Cast To BP_Enemy` anywhere in a Blueprint graph, the VM reads the entire `BP_Enemy` class — including all of its hard-referenced assets (meshes, textures, sounds, materials) — into memory at the time the owning Blueprint loads. This happens even if the cast branch never executes at runtime.
-
-A single `Cast To BP_PlayerCharacter` in a UI widget means the entire character class (and everything it references) is loaded when the widget loads. Chains of these references throughout a project can easily reach hundreds of megabytes of unexpected memory usage ([Intax's Blueprint VM performance guide](https://intaxwashere.github.io/blueprint-performance/)).
-
-Audit tool: right-click any asset in the Content Browser → `Size Map`. Tom Looman recommends running this on Blueprints and levels early and often ([Tom Looman optimization talk](https://tomlooman.com/unreal-engine-optimization-talk/)).
-
-Soft Object References and Soft Class References:
-- A `Soft Class Reference to BP_Enemy` variable stores only the asset path as a string — nothing is loaded until you explicitly resolve it.
-- Pitfall: if you call `Load Asset` and wire the result into `Cast To BP_Enemy`, the VM will still load `BP_Enemy` at Blueprint compile time. Escape: use a lighter base class for the soft reference (e.g. `Soft Class Reference to Actor`) and cast to the specific type only after the async load completes.
-
-When direct casting is acceptable: within the same module (e.g. a Component casting to its owning actor), or when the reference cost has already been paid and the result is cached in a variable (cast once in BeginPlay, store the result). Never scatter `Cast To BP_PlayerCharacter` across dozens of unrelated Blueprints.
-
----
-
-### Garbage Collection in Blueprints
-
-UE5's GC collects all objects derived from `UObject` when no live `UPROPERTY` pointer references them. In Blueprint, all variables are the equivalent of `UPROPERTY` — they keep referenced objects alive.
-
-Dangling reference pitfall: after calling `Destroy Actor`, a stored reference to that actor becomes invalid. The Blueprint variable still holds a non-null pointer to the "pending kill" object. Always check `Is Valid` before using a stored actor reference.
-
-However, polling `Is Valid` in Tick to manage object lifetime is itself a code smell. Prefer:
-- Delegates/callbacks on destruction — the owner receives an event when the referenced object is destroyed.
-- Weak Object References — these do not prevent GC; they become null automatically when the object is collected.
-
-GC Clusters: in UE5, GC groups related objects into clusters for batch collection. This means you cannot partially unload a cluster — the entire group unloads together. Relevant during level streaming and async loading subsystems.
-
----
-
-### Construction Script
-
-The Construction Script (CS) runs on every property change in the Details panel, every time an actor is moved in the editor, and at level load time. Spawning actors in the CS creates orphaned actors in the level on every re-run.
-
-What not to do in the Construction Script:
-
-- Spawn actors (use Child Actor Components instead).
-- Expensive async operations — they block the editor thread.
-- Fetch references to other actors — they may not exist when the CS runs at level load.
-- Modify level state — the CS has no guaranteed execution order relative to other actors.
-
-For logic that is only expensive in-editor: wrap it in an `Is in Editor` check (from `KismetSystemLibrary`), or in C++ use a `#if WITH_EDITOR` guard inside `OnConstruction()`.
-
----
-
-### Replication
-
-#### Replicated vs RepNotify
-
-| Variable Mode | Behavior | Use Case |
-|---|---|---|
-| Replicated | Value syncs to clients; no callback | Movement speed, passive stats |
-| RepNotify (ReplicatedUsing) | Value syncs + calls `OnRep_VarName()` on clients | UI-visible state (health bar), one-shot effects |
-
-RepNotify is event-driven and avoids polling. It replays correctly for late-joining clients (they receive the current value on connection, triggering the RepNotify function). RPCs fire once — a late-joining client misses any RPC called before they connected.
-
-#### Actor Dormancy — An Underrated Optimization
+**Actor Dormancy — an underrated multiplayer optimization [UE4 + UE5]:**
 
 Without dormancy: ~15 ms overhead per actor, 99.3% waste rate. With `DormantAll`: 0.13 ms, zero waste ([Reddit UE5 dormancy benchmark](https://www.reddit.com/r/UnrealEngine5/comments/1lzi6xg/networking_optimization_in_unreal_engine_5_with/)). For static or rarely-changing actors (barrels, furniture, world props), dormancy eliminates the constant replication overhead.
 
@@ -517,60 +654,1185 @@ DORM_DormantPartial — per-connection dormancy control
 
 Blueprint nodes: `Set Actor Net Dormancy`, `Flush Net Dormancy`.
 
-#### The Most Common Networking Mistake
+**Tick Groups:** if Actor B reads a position set by Actor A, and both are in the same tick group, order is non-deterministic. Use `Add Tick Prerequisite Actor` sparingly — prerequisites trigger a TArray sort every frame in the worst case. Prefer assigning different Tick Groups over a web of prerequisites ([Epic Forums: Tick Group vs Tick Prerequisite](https://forums.unrealengine.com/t/tick-group-vs-tick-prerequisite/1728813)).
 
-Forgetting to check "Replicates" in the actor's Class Defaults. Without this flag, the entire actor replication system is disabled — no variable replicates, no RPC works. Always verify: Class Defaults → Replication → Replicates = true.
+UE5.5 adds the `tick.AllowBatchedTicks` CVar — when enabled, the engine groups similar tick functions and dispatches them to the Task Graph as batches, reducing per-tick overhead for actors with many instances ([Tom Looman — UE 5.5 Performance Highlights](https://tomlooman.com/unreal-engine-5-5-performance-highlights/)).
 
-Adaptive Net Update Frequency: `net.UseAdaptiveNetUpdateFrequency 1` — when enabled, the engine dynamically lowers the update rate to `MinNetUpdateFrequency` when no properties have changed ([Matt Gibson's replication settings guide](https://mattgibson.dev/blog/unreal-replication-settings)).
+**Casting pitfall — the most important memory concept in Blueprint development:**
 
----
+When you place `Cast To BP_Enemy` anywhere in a Blueprint graph, the VM reads the entire `BP_Enemy` class — including all of its hard-referenced assets — into memory at the time the owning Blueprint loads. This happens even if the cast branch never executes at runtime. A single `Cast To BP_PlayerCharacter` in a UI widget means the entire character class (and everything it references) is loaded when the widget loads ([Intax Blueprint VM performance guide](https://intaxwashere.github.io/blueprint-performance/)).
 
-### Anti-Patterns in Blueprints
+Soft Object References: a `Soft Class Reference to BP_Enemy` variable stores only the asset path — nothing is loaded until explicitly resolved. Pitfall: if you call `Load Asset` and wire the result into `Cast To BP_Enemy`, the VM will still load `BP_Enemy` at Blueprint compile time. Escape: use a lighter base class for the soft reference and cast to the specific type only after the async load completes.
 
-#### `Get All Actors Of Class` — The Biggest Anti-Pattern
+**GC and Construction Script rules:**
 
-`Get All Actors Of Class` iterates the entire actor list of the current world, building a new TArray on every call. Called in Tick or on frequent events — catastrophic for performance ([r/UnrealEngine5 thread](https://www.reddit.com/r/UnrealEngine5/comments/1kzvzt0/i_hate_get_actor_of_class/)).
+The Construction Script runs on every property change in the Details panel, every time an actor is moved in the editor, and at level load time. What not to do in the Construction Script:
+- Spawn actors (use Child Actor Components instead)
+- Expensive async operations — they block the editor thread
+- Fetch references to other actors — they may not exist when the CS runs at level load
+- Modify level state — the CS has no guaranteed execution order relative to other actors
 
-Correct alternatives:
-- Manager/Subsystem registration: actors register themselves in GameMode or GameState in BeginPlay and unregister in EndPlay. The manager holds a typed TArray. Zero lookup cost.
-- Overlap/collision events: for "all enemies within radius," use `SphereTraceMulti` or `GetOverlappingActors` on a collision component — spatially accelerated.
+**Lesser-known tricks:**
 
-#### Pure Functions — Multiple Executions
+- `Instance Editable + Expose on Spawn` on a variable makes it an input pin on `Spawn Actor from Class` — eliminates post-spawn setter chains.
+- `Window > Find in Blueprints` provides project-wide search. In UE5.4+, right-click a function call → Find References for exact call-site discovery.
+- `Tick Prerequisites` (`Add Tick Prerequisite Actor`) enforce actor ordering within a tick group, but trigger a TArray sort every frame in the worst case. Prefer assigning different Tick Groups over a web of prerequisites.
+- Blueprint diff tool: right-click Blueprint → Revision Control → Diff Against Depot. Binary `.uasset` files cannot be diffed with standard text tools ([Kokku Games Blueprint diff guide](https://kokkugames.com/tutorial-stop-guessing-what-changed-in-your-blueprintsgit-blueprint-diff-inside-unreal-engine/)).
+- Editor Utility Widgets (EUW) run Blueprint logic in the editor only. Use for batch operations, naming convention validation, and procedural level setup — without any runtime cost.
+- `Get Class Defaults` node accesses CDO data without constructing an instance.
+- Adaptive Net Update Frequency: `net.UseAdaptiveNetUpdateFrequency 1` — when enabled, the engine dynamically lowers the update rate to `MinNetUpdateFrequency` when no properties have changed ([Matt Gibson's replication settings guide](https://mattgibson.dev/blog/unreal-replication-settings)).
 
-A "Pure" Blueprint node (green, no execution pins) is re-evaluated every time its output is consumed by a downstream node. If you wire a costly pure function's output into three nodes, the function executes three times ([UE Forums on pure function overhead](https://forums.unrealengine.com/t/multi-output-pure-functions-inefficient/21278)).
-
-Fix: call the function once as an impure (non-pure) call, cache the output in a local variable, then consume the variable. Or right-click the pure node → Convert to Impure.
-
-#### Other Pitfalls
-
-- `ForEachLoop` without early exit: use `ForEachLoopWithBreak` with the Break pin connected.
-- `Make Array` inside Event Tick: heap allocation every frame, GC pressure. Pre-allocate as a member variable.
-- `Delay` for cancellable timed logic: cannot be cancelled. Use `Set Timer by Event` with a stored handle.
-- `Sequence` node: all outputs fire synchronically in the same frame — this is NOT a way to spread work over time.
-
----
-
-### Lesser-Known Tricks
-
-**Validated Get — the green pin:** instead of `[Variable] → Is Valid → Branch → [True] → Get Variable`, right-click the variable getter → `Convert to Validated Get`. One node with `Is Valid` and `Is Not Valid` exec outputs. Reduces graph clutter by ~3 nodes per validity check.
-
-**Instance Editable + Expose on Spawn:** the variable appears as an editable field on every placed level instance AND as an extra input pin on `Spawn Actor from Class`. Eliminates post-spawn setter calls and makes spawn configuration self-documenting.
-
-**Data Tables + Primary Asset IDs:** define data in a DataTable (CSV/JSON). The same `BP_Enemy` class handles 100 enemy types by reading stats from a DataTable row in BeginPlay. Combine with Asset Bundles: load only the "UI" bundle (icon, name) at the shop menu; the full "Actor" bundle (mesh, animations) only at spawn ([Tom Looman Asset Manager guide](https://tomlooman.com/unreal-engine-asset-manager-async-loading/)).
-
-**Editor Utility Widgets:** EUWs are full UMG UIs with Blueprint logic that run only in the editor. Practical uses: bulk-rename assets, apply materials to selected static meshes, generate DataTable rows from a spreadsheet-like interface, validate naming conventions across the project.
-
-**Find in Blueprints (Window → Find in Blueprints):** project-wide search across all Blueprint assets. In UE5.4+: right-click a function call → "Find References" generates a pre-filtered query for that exact function. Use for auditing `Get All Actors Of Class` before shipping.
-
-**Blueprint Diffing:** right-click a Blueprint → Revision Control → Diff Against Depot. Binary `.uasset` files cannot be diffed with standard tools. Requires a source control plugin (Perforce, Git, Plastic SCM) ([Kokku Games Blueprint diff guide](https://kokkugames.com/tutorial-stop-guessing-what-changed-in-your-blueprintsgit-blueprint-diff-inside-unreal-engine/)).
+**Tools for this role:**
+`stat blueprints`, `stat unit`, Insights (cpu,frame), Size Map, Blueprint Profiler (Session Frontend, legacy)
 
 ---
 
-## Part 3: C++ and Systems Programming
+### Level Design / Environment Art **[UE4 + UE5 unless tagged]**
 
-### Profiling — Unreal Insights in Practice
+Level design decisions — geometry placement, lighting configuration, streaming setup — have the broadest performance impact of any discipline because they affect nearly every other system simultaneously.
 
-Unreal Insights replaces the older Session Frontend. Choose trace channels before profiling:
+**Common pitfalls:**
+
+- **Nanite enabled on simple meshes** **[UE5 only]** — Nanite clusters geometry for micro-polygon rendering. Meshes with fewer than ~300 triangles pay the cluster overhead without sufficient geometry to amortize it. In production tests, disabling Nanite on a handful of simple meshes yielded a ~3 ms gain with zero visual difference ([r/UnrealEngine5, 2025](https://www.reddit.com/r/UnrealEngine5/comments/1ot0ms4/nanite_warning_lower_performance_with_simples/)).
+- **Nanite + Masked Material + WPO on foliage** **[UE5 only]** — forces Programmable Rasterizer (software path), 2–4× more expensive than opaque Nanite. Disabling WPO shadow evaluation per-mesh can reduce shadow depth cost from 8 ms to 3 ms in foliage-heavy scenes ([StraySpark VSM blog](https://www.strayspark.studio/blog/virtual-shadow-map-optimization-open-worlds-ue5-7)).
+- **Nanite overdraw from dense overlapping geometry** **[UE5 only]** — When geometry layers overlap densely (e.g. thick foliage, tightly packed rocks), Nanite renders all overlapping triangles. Visible as white-to-yellow areas in the `r.Nanite.Visualize Overdraw` mode ([Nanite for Artists | GDC 2024](https://www.youtube.com/watch?v=eoxYceDfKEM)).
+- **Nanite Fallback Mesh at default `Fallback Relative Error = 0`** **[UE5 only]** — the fallback is identical to the source mesh. In projects with many unique meshes, fallback meshes can occupy 100–400 MB of VRAM ([Epic Forums, 2025](https://forums.unrealengine.com/t/nanite-fallback-mesh-buffers-vram-residence/2563974)).
+- **VSM Page Pool too small for open world** **[UE5 only]** — default 4096 pages (256 MB) overflows in large open worlds, causing shadow stippling artifacts. Increase to `r.Shadow.Virtual.MaxPhysicalPages=8192` for open world PC/console targets.
+- **HLOD left at "Lowest Available LOD" for landscape** **[UE5 only]** — produces a visually degraded gray blob. Set Specific LOD = 4–5 in World Settings > HLOD Setups.
+- **Auto-Save with OFPA active** **[UE5 only]** — One-File-Per-Actor generates thousands of file changes per Auto-Save in large levels. Disable Auto-Save (Editor Preferences > Loading & Saving) and save manually.
+- **Too many Point Lights with Cast Shadows** — each local VSM light maintains its own shadow pages. Dozens of cast-shadow point lights = instant page pool overflow and performance collapse.
+- **Cull Distance Volumes absent in dense interiors** — without explicit cull distances, small props render at any distance. CPU-side culling is nearly free; not using it is a missed optimization.
+- **Monolithic building meshes** **[UE5 only]** — a single "entire building" mesh generates only exterior Lumen Cards. Interior receives no GI. Build modularly.
+
+**Recommended practices:**
+
+**Nanite tuning [UE5 only]:**
+- Use Nanite for hero props, architecture, terrain, and rocky cliffs — not for simple flat planes, small cubes, or any mesh below ~300 triangles.
+- Tune `r.Nanite.MaxPixelsPerEdge 2` on medium settings and `4` on low settings — large gains with minimal visual regression ([Intel UE5 Optimization Guide Ch.2](https://www.intel.com/content/www/us/en/developer/articles/technical/unreal-engine-optimization-chapter-2.html)).
+- Configure fallback mesh settings:
+
+```ini
+; Per-mesh in Static Mesh Editor:
+Fallback Triangle Percent = 1-5%   ; aggressive reduction for decorative assets
+Fallback Relative Error = 1.0      ; large silhouette deviation allowed (small/background mesh)
+
+; Project-wide (cook), UE5.5+:
+[/Script/WindowsTargetPlatform.WindowsTargetSettings]
+bGenerateNaniteFallbackMeshes=False   ; strip all fallbacks from the cook entirely
+```
+
+- Disable WPO shadow evaluation on foliage meshes: `Details → Shadow → Evaluate World Position Offset (Shadow) = Off`.
+- Set `WPO Disable Distance` on foliage (30 m for small plants, 80 m for trees) — Nanite won't evaluate WPO for distant objects.
+- For Nanite Tessellation (UE5.4+): use selectively on hero assets and key terrain features — it can double Nanite pass time if applied broadly.
+
+```ini
+r.Nanite.Tessellation=1
+r.Nanite.AllowTessellation=1
+r.Nanite.DicingRate=2   ; default 2px — higher = less dense, cheaper
+                        ; recommended 4-8 for background, 1-2 for hero props
+```
+
+| Situation | Recommendation |
+|---|---|
+| Meshes < 300 triangles (simple cube, plane) | Traditional LOD / ISM |
+| Meshes with Masked material and WPO (grass, leaves) | Traditional LOD or opaque Nanite geometry |
+| Skeletal meshes (UE5.4 and older) | Traditional LOD (Nanite SK experimental from 5.5) |
+| Translucent geometry (glass, water) | Traditional — Nanite does not support translucency |
+| Foliage with opaque geometry leaves | Nanite + Preserve Area flag |
+
+**World Partition [UE5 only]:**
+- Use Runtime Grid Cell Size matching environment scale: 128 m (default) for most worlds, 64 m for dense cities, 256 m for sparse landscapes. Loading Range = 2× Cell Size.
+- Data Layers: Runtime Data Layers for game state variations (peaceful vs. combat). External Data Layers for DLC. Avoid overlapping multiple Runtime Data Layers in the same spatial area — this multiplies cell count.
+- Data Layers vs Level Instances — these are fundamentally different concepts:
+
+| Use Case | Solution |
+|---|---|
+| DLC / seasonal content | External Data Layer (EDL) — content in a separate plugin |
+| Game state (peaceful village vs. raided) | Runtime Data Layer |
+| Repeating POIs (gas stations, houses) | Level Instance → Packed Level Actor |
+| Modular building in multiple locations | Level Instance + Embedded (no runtime overhead) |
+
+Runtime Data Layers are NOT compatible with Level Instances — you cannot place a Level Instance inside an External Data Layer ([xbloom.io WP Internals](https://xbloom.io/2025/10/24/unreals-world-partition-internals/)). Too many overlapping Data Layers + Runtime Grids produces a combinatorial explosion of streaming cells.
+
+- Level Instances and Packed Level Actors: use PLA for repeating modular props (gas stations, buildings). PLAs auto-batch identical meshes into ISMs at cook time. One PLA with 20 instances of the same mesh = 1 draw call ([KitBash3D Guide](https://help.kitbash3d.com/en/articles/12038349-a-quick-guide-packed-level-actors-level-instancing-in-unreal-engine-with-kitbash3d)).
+- Runtime Cell Transformers (UE5.5+): set Static Mobility on decorative props with no gameplay references. The ISM Runtime Cell Transformer automatically batches them during Streaming Generation. Zero manual effort.
+- HLOD configuration: for Nanite meshes, use HLOD Layer Type = Instanced (no decimation). For non-Nanite large world objects, use Merged with appropriate LOD settings. HLOD1 is consumed by Lumen's Far Field pass.
+- OFPA best practices: disable Auto-Save for large WP scenes. Rename folders containing OFPA actors only after verifying and updating all references. Use `wp.Editor.DumpStreamingGenerationLog` to debug streaming cell assignments.
+
+**Occlusion and culling:**
+- HISM vs ISM in the Nanite era: HISM for non-Nanite foliage (hierarchical LOD + CPU occlusion). ISM for Nanite meshes (Nanite handles LOD/cull on GPU — HISM hierarchy is wasted CPU).
+- Precomputed Visibility for closed indoor environments (dungeons, corridors): place Precomputed Visibility Volumes covering player-accessible areas. Can reduce draw calls by 50–90% with zero runtime GPU cost ([Epic Docs: Visibility and Occlusion Culling](https://dev.epicgames.com/documentation/unreal-engine/visibility-and-occlusion-culling-in-unreal-engine)).
+- Cull Distance Volumes: set cull distances by bounding sphere size. Rule of thumb: `[50cm, 2000cm]` — cull objects under 50 cm bounding sphere when farther than 20 m.
+
+**Lesser-known tricks:**
+
+- `wp.Editor.DumpStreamingGenerationLog` — dumps a log of which actors ended up in which streaming cells. Output in `Saved/Logs/WorldPartition/`.
+- Predictive streaming source for vehicles/fast movement: add a secondary Streaming Source component offset in the direction of velocity. Fills cells before the player arrives, eliminating pop-in. The default Streaming Source is purely reactive.
+- Large actors spanning more than one cell size (churches, bridges) are "promoted" to a higher grid level and may load independently of normal cells — be aware of this when designing large structures.
+- World Composition → World Partition migration: `UnrealEditor.exe "project.uproject" -run=WorldPartitionConvertCommandlet "MapName"`. Foliage tiles require manual re-placement.
+- HZB Occlusion `r.HZBOcclusion=0` — disable to test whether HZB is causing false occlusion culling artifacts (rare bug in some UE5 versions with fast camera rotation).
+- `r.Nanite.Streaming.StreamingPoolSize` — controls Nanite geometry streaming pool. Default 512 MB. Reduce for memory-constrained platforms.
+- VSM diagnostics:
+
+```
+stat VirtualShadowMapCache             ; look for "Physical page pool overflow"
+r.Shadow.Virtual.Cache.DrawInvalidatingBounds 1  ; green boxes = what's invalidating the cache
+r.Shadow.Virtual.Visualize 1          ; mode 2 = Page Allocation (green = cached, red = new)
+```
+
+**Tools for this role:**
+Nanite Visualization modes, Lumen Surface Cache view, VSM Visualize, `stat nanite`, `stat virtualshadowmaps`, `stat initviews`, `show LOD`, `show Bounds`
+
+**CVars cheat sheet:**
+
+| CVar | Default | Notes | Engine |
+|---|---|---|---|
+| `r.Nanite.MaxPixelsPerEdge` | 1 | Higher = fewer triangles, faster | UE5 only |
+| `r.Nanite.Streaming.StreamingPoolSize` | 512 (MB) | Nanite geometry pool size | UE5 only |
+| `r.Shadow.Virtual.MaxPhysicalPages` | 4096 | Increase to 8192 for open worlds | UE5 only |
+| `r.Shadow.Virtual.Cache.DrawInvalidatingBounds` | 0 | Green boxes = VSM cache invalidators | UE5 only |
+| `r.HZBOcclusion` | 1 | Set 0 to disable HZB (debug only) | UE4 + UE5 |
+| `wp.Runtime.RuntimeCellSize` | 12800 | World Partition cell size in cm | UE5 only |
+
+---
+
+### Materials / Shader Authors **[UE4 + UE5]**
+
+Shaders are the silent bottleneck. High instruction count hurts fill rate; too many unique shaders hurts PSO compilation and Nanite shading bins.
+
+**Common pitfalls:**
+
+- **Static Switch explosion** — every Static Switch Parameter doubles compiled permutations. N switches = 2ᴺ permutations. With 8 switches in a master material, that is 256 shader variants compiled to disk, each needing a PSO. Static Switches have zero runtime cost but blow up cook time and memory if overused. Keep master materials to fewer than 6 static switches; use separate master materials for fundamentally different shading models. Every combination of settings is a separate shader from the GPU's perspective ([Epic's Knowledge Base on shader permutations](https://forums.unrealengine.com/t/knowledge-base-understanding-shader-permutations/264928)).
+- **Dynamic Switch vs Static Switch distinction** — the `Switch Parameter` node (dynamic) compiles BOTH branches into the shader; both consume instruction budget even when not taken. On AMD GPUs, context rolls from mismatched PSO states with many dynamic switches cause stalls. Use Static Switches for quality tier variations; use dynamic switches only when the change happens at runtime per-instance.
+- **Texture Sampler limit** — base hardware limit is 16 samplers per shader. Exceeding this causes a shader compilation fallback 2–3× slower. UE has 13 slots for use before engine reserves are consumed. Audit with the Material Stats window.
+- **Dynamic Material Instance created per-frame** — `CreateDynamicMaterialInstance` allocates a new UObject on the heap. Pool MIDs: create once, store, update parameters only.
+- **Custom HLSL node pitfalls** — TEXCOORD overflow (limit of 8 UV interpolators; 16 in UE5 with additional cost), texture sampling requires `Texture2DSample(Tex, TexSampler, UV)` not `tex2D()` in SM5, the HLSL compiler aggressively unrolls loops (add `[loop]` attribute for dynamic counts), and helper functions can be wrapped in a struct declaration or included via `#include "/Engine/Private/Common.ush"`.
+- **Translucency overuse** — translucent objects render in a separate full-screen pass without depth testing. Layered translucency (many overlapping transparent meshes) is the fastest way to destroy fill rate.
+- **PDO shadow pass limitations** — Pixel Depth Offset does not run during the shadow depth pass, causing severe self-shadowing artifacts. PDO also forces materials off Nanite's hardware raster fast path. **[UE5 only]** Lumen ghosting: when PDO is active and Lumen's temporal GI is accumulating, displaced pixels cause smearing during camera movement. Nanite Tessellation (UE5.3+) is a better alternative for displacement with correct shadows.
+- **WPO + Nanite per-cluster culling** **[UE5 only]** — the `Max World Position Offset Displacement` setting in the material controls Nanite's per-cluster culling for WPO. Setting it too high disables culling; setting it to 0 disables WPO. Set it to the tightest accurate value for each material.
+- **Material Complexity not measured** — a material with 200+ instructions in the pixel shader will saturate fill rate on mid-range hardware. Target <100 instructions for non-hero background surfaces.
+
+**Recommended practices:**
+
+- Use `Material Stats` window (the statistics panel in Material Editor) to monitor instruction count, sampler count, and interpolator usage per shader permutation.
+- Use `Material Layers` (UE5 Material Layer Functions) to compose surface variations without separate master materials.
+- Use `Material Quality Switch` node to route through Low/Medium/High/Epic branches, controlled by `r.MaterialQualityLevel 0/1/2/3`. Strip expensive features (normal map blending, distance-based roughness variation) on lower settings without maintaining separate master materials.
+- Use **Shared Wrap sampler** (`SAMPLER_TYPE_ANISO_WRAP`) for textures using the same wrap mode. UE packs multiple textures into a single sampler slot — this allows up to 128 textures per shader (vs. the default 16 hardware limit) ([Reddit discovery thread](https://www.reddit.com/r/unrealengine/comments/3myppm/til_you_can_use_more_than_16_texture_samplers_by/)). On any `Texture Sample` node, set `Sampler Source → Shared: Wrap` (or `Shared: Clamp`). Trade-off: all textures using the shared sampler must use the same wrapping mode.
+- Use `VertexInterpolator` node for expensive per-pixel calculations that can be pre-computed per-vertex. Moves cost from pixel shader to vertex shader — massive fill rate gain for dense geometry.
+- **[UE5 only] Substrate**: Material Layer Functions within Substrate allow physically-based slab stacking. Requires `Project Settings > Rendering > Substrate = true`.
+- **[UE5 only] Nanite + opaque materials**: Nanite's deferred shading bin system groups draws by unique shader. Minimizing unique shaders is more impactful in a Nanite scene than reducing polygon count. Merge material variants into one master with parameter variations.
+- Use `Blend Mode: Masked` whenever binary opacity suffices — Masked runs a depth pre-pass then shades surviving quads once. Translucent skips depth prepass and shades every pixel every time.
+- Pack multiple single-channel data maps into one RGBA texture and use component masks: R = AO, G = Roughness, B = Metallic. One texture fetch returns four values. Set sRGB = Off on packed textures.
+- `Material Attributes` (enable `Use Material Attributes` on a material or function) collapses all inputs/outputs into a single `MaterialAttributes` pin. Use `BlendMaterialAttributes` to lerp between two attribute structs — ideal for layered materials (BaseLayer → WetnessLayer → SnowLayer) without spaghetti wiring.
+- Use `VertexInterpolator` node for pre-computable-per-vertex data. Moves cost from pixel shader to vertex shader.
+- Classic tessellation is removed in UE5.0 **[Deprecated in UE5]**. Use Nanite Displacement (UE5.2+ experimental, production from ~UE5.4) via the Nanite Displacement Mesh plugin.
+- For translucency: prefer `Blend Mode: Masked` for binary opacity. Translucency lighting modes by cost:
+
+| Mode | Cost | Quality | Use Case |
+|---|---|---|---|
+| `Volumetric Non-Directional` | Cheapest | Flat lighting | Smoke, fog |
+| `Surface Translucency Volume` | Medium | GI approximate | Water, semi-transparent props |
+| `Surface Forward Shading` | Expensive | Full PBR + specular | Glass, gems, hero props |
+
+Refraction forces a scene color capture (read-before-write) — very expensive. For secondary materials, consider fake refraction via normal-mapped distortion.
+
+**WPO CVars:**
+```
+r.Shadow.Virtual.Cache.MaxMaterialPositionInvalidationRange 10
+r.Shadow.Virtual.NonNanite.IncludeInCoarsePages 0
+```
+The first limits the radius within which WPO movement invalidates VSM shadow cache pages — the main source of WPO performance regression on dense foliage.
+
+**Lesser-known tricks:**
+
+- `r.ShaderPipelineCache.Enabled 1` and PSO pre-compilation from captured PSO caches can eliminate first-draw stutter. Capture PSOs during QA and ship the cache.
+- `r.CompileShadersOnDemand 0` in shipping builds forces all shaders to compile during cook, eliminating first-use stalls.
+- Custom HLSL nodes can read `View.ViewToClip`, `View.WorldToView`, and other view-uniform data. Document what uniforms you reference.
+- Tiling atlases vs. Texture Arrays: use `Texture2DArray` when you need to sample many variants of the same resolution/format in one shader.
+- For 1D gradient LUTs (color ramp, SSS falloff): store as a 256×1 or 256×16 texture. One texture fetch replaces an expensive math chain.
+- `Material Quality Switch` routes execution based on `r.MaterialQualityLevel` — use it to strip expensive features at lower quality without maintaining separate master materials.
+
+**Tools for this role:**
+Material Stats panel, Shader Complexity View Mode, Quad Overdraw View Mode, `stat shadercompiling`, RenderDoc shader debugger
+
+**CVars cheat sheet:**
+
+| CVar | Default | Notes | Engine |
+|---|---|---|---|
+| `r.MaxAnisotropy` | 4 | Texture filter quality | UE4 + UE5 |
+| `r.CompileShadersOnDemand` | 1 | 0 = compile all during cook | UE4 + UE5 |
+| `r.Nanite.Tessellation` | 0 | Enable Nanite displacement | UE5.2+ |
+| `r.Nanite.DicingRate` | 2 | Tessellation density (pixels/triangle) | UE5.2+ |
+| `r.ShaderPipelineCache.Enabled` | 1 | PSO cache usage | UE4 + UE5 |
+| `r.MaterialQualityLevel` | 3 | 0=Low, 1=Medium, 2=High, 3=Epic | UE4 + UE5 |
+
+---
+
+### Meshes / 3D Art **[UE4 + UE5]**
+
+**Common pitfalls:**
+
+- **Nanite on foliage cards** **[UE5 only]** — alpha-masked foliage (leaves as cards) with WPO triggers Programmable Rasterizer on every triangle, including masked ones. Each shadow pass is also affected. Best practice: use full opaque geometry for Nanite foliage leaves, or disable Nanite and use HISM LODs.
+- **Fallback mesh too high-poly** **[UE5 only]** — Nanite fallback mesh defaults to `Fallback Relative Error = 0`, meaning an exact copy of the source. For a 500k polygon source mesh, the fallback is also 500k polygons. Set `Fallback Triangle Percent = 1–5%` and `Fallback Relative Error = 1.0` for decorative assets.
+- **Nanite Foliage WPO incompatibility** **[UE5 only]** — Nanite does not support per-vertex WPO wind animation without forcing the software raster path. Solutions: (1) Pivot Painter 2 — bake pivot data into UV channels, disable unused Wind Settings groups to remove instructions; (2) Hybrid LOD — LOD0 as a traditional mesh with WPO wind, LOD1+ as Nanite with instance-level sway only; (3) Per-Instance Custom Data — instance animation (rotation around base pivot) for subtle swaying ([StraySpark Nanite foliage guide](https://www.strayspark.studio/blog/nanite-foliage-ue5-complete-guide)).
+- **Procedural foliage collision trap** — enabling collision on procedurally spawned foliage kills performance (the physics engine iterates all instances). The Kite Demo deliberately has no foliage collision. Use a proximity sphere around the player with separate simplified collision proxies.
+- **Collision meshes too detailed** — complex collision (`Use Complex as Simple`) on dense static meshes is expensive for physics queries and for Lumen HWRT BLAS generation. Use simplified custom collision or box/sphere primitives for most props.
+- **No LODs on non-Nanite meshes** — skeletal meshes, translucent meshes, and any mesh not using Nanite must have manually created LODs. A 50k polygon character without LODs tanks GPU fill rate at medium distance.
+- **Unique materials per mesh in non-Nanite scene** — each unique material on a mesh requires a separate draw call. Merge materials using texture atlases.
+- **Lightmap UVs overlapping or too dense** — overlapping lightmap UVs produce lighting artifacts; too-dense packing wastes texture memory.
+
+**Recommended practices:**
+
+- **Nanite: use for hero props, architecture, and terrain — not for simple geometry**: Triangle threshold ~300. Below that, ISM/HISM batching is usually cheaper.
+- **Nanite Fallback Mesh**: Set `Fallback Triangle Percent = 1–5%` for decorative assets. For cook-time removal of all fallbacks (UE5.5+): `bGenerateNaniteFallbackMeshes=False` in target platform settings. Verify non-Nanite render paths visually.
+- **WPO Disable Distance [UE5 only]**: Set per mesh in Static Mesh Editor. Small foliage: 30 m. Large trees: 80 m. Hero props requiring wind animation: 150 m or leave enabled.
+- **Distance Field Resolution Scale**: Set to 0.5 for background geometry, 1.0 for hero props, 2.0 for Lumen-critical geometry.
+- **Merge Actors** for static background props that will never be individually referenced by gameplay. Reduces draw calls but sacrifices per-element LOD. Use Runtime Cell Transformers (UE5 WP) as a non-destructive alternative.
+- **GPU Skin Cache [UE4 + UE5]**: Enable in Project Settings > Rendering. Moves skeletal mesh skinning to GPU compute, freeing vertex shader slots and reducing CPU overhead. Required for Cloth and Mesh Deformer features. `r.SkinCache.Mode 1`.
+- **Mesh Deformer [UE5 only]**: Replaces morph target deformation with a compute shader path. Compatible with Nanite Skeletal Mesh. More efficient for face shapes and body morphs at scale.
+- For collision on vegetation and foliage: use simple convex hull or even no collision. Never use complex-as-simple for foliage.
+- Foliage density scalability:
+
+```ini
+[FoliageQuality@0]
+foliage.DensityScale=0.4
+[FoliageQuality@2]
+foliage.DensityScale=1.0
+```
+
+**Lesser-known tricks:**
+
+- **Nanite Skeletal Mesh [UE5.5+ experimental]**: Significant FPS gains in crowd scenes (~22 FPS → 55+ FPS in a 500-character scene). Enable in Project Settings > Experimental ([The Future of Nanite Foliage | Unreal Fest Stockholm 2025](https://www.youtube.com/watch?v=aZr-mWAzoTg)).
+- **Nanite Preserve Area flag**: for foliage with Nanite enabled, set Preserve Area to maintain silhouette accuracy at distant LODs.
+- **`NaniteStats` console command** — shows per-frame Nanite cluster, instance, and streaming stats beyond what `stat nanite` shows.
+- Quad Overdraw View Mode (`View → Optimization Viewmodes → Shader Complexity & Quads`) reveals how many GPU quads are wasted by sub-pixel triangles. When a triangle is smaller than one quad, the GPU still shades all 4 pixels — 75% wasted work.
+
+**Tools for this role:**
+Nanite Overdraw view mode, LOD Coloration view, `stat nanite`, `stat scenerendering`, Static Mesh Editor (Nanite fallback settings)
+
+---
+
+### Lights and Shadows **[UE4 + UE5]**
+
+**Common pitfalls:**
+
+- **Many Point Lights with Cast Shadows enabled** — each shadow-casting VSM local light maintains its own page pool allocation. Dozens of cast-shadow point lights with overlapping radii = page pool overflow, stipple artifacts, and severe performance degradation.
+- **Stationary Directional Light without CSM tuning [UE4 only]** — default CSM settings are generous. `CascadeDistributionExponent`, `NumDynamicShadowCascades`, and `DynamicShadowDistanceStationaryLight` all need per-project tuning.
+- **Lumen left at Epic Scalability defaults** **[UE5 only]** — Epic scalability targets high-end benchmarking hardware. Default `TracingOctahedronResolution`, `DownsampleFactor`, and `MaxTraceDistance` are too expensive for mid-range console targets without tuning.
+- **Lumen emissive lighting transients** **[UE5 only]** — emissive lighting through Lumen has no historical data after a cut or level load. Visible GI flickering for 0.5–2 seconds after cuts. Mitigation: back critical emissive sources with a Point/Spot Light for stable GI. Enable the `Emissive Light Source` checkbox on an actor to prevent the Surface Cache from culling it.
+- **Monolithic building meshes killing Lumen Card generation** **[UE5 only]** — a single "entire building" mesh generates only exterior Lumen Cards. Interior receives no GI. Build modularly — separate meshes for walls, floors, ceilings — for correct Lumen GI coverage inside ([Unreal Fest Gold Coast 2024](https://www.youtube.com/watch?v=szgnZx2b0Zg)).
+- **VSM Page Pool overflowing in open worlds** **[UE5 only]** — the default 4096 pages is appropriate for linear games but too small for open-world projects. An overflowed page pool produces visible stippling patterns when rotating the camera ([StraySpark VSM Deep Dive](https://www.strayspark.studio/blog/virtual-shadow-map-optimization-open-worlds-ue5-7)).
+
+**Recommended practices:**
+
+**[UE4 only] Stationary Light workflow:**
+- Use Stationary Directional + Stationary Sky for the main outdoor lighting. Bakes indirect; dynamic shadows handled by CSM.
+- Stationary Point/Spot lights bake colored AO + indirect; dynamic shadow from a small shadow map (Distance Field Shadows).
+- Never exceed 4 overlapping Stationary lights — UE4 falls back to dynamic for the 5th.
+- Use GPU Lightmass (`r.GPULightmass 1`) for baking — 5–10× faster than CPU Lightmass. **[UE5 only]**: GPU Lightmass is the standard path in UE5.
+
+**[UE5 only] Hardware vs Software Lumen decision matrix:**
+
+| Consideration | Software Lumen | Hardware Lumen |
+|---|---|---|
+| GPU requirement | Any (DX12/Vulkan) | RT hardware required |
+| Skinned mesh GI | No | Yes |
+| Far Field (>1km) | No | Yes (uses HLOD1) |
+| Thin objects (< 4 cm) | Excluded from Surface Cache | Better support |
+| Reflections | Surface Cache (approximate) | Hit Lighting (full material eval) |
+| Use case | Console, broad platform | Archviz, film, Metahuman GI |
+
+When to use Software: console games, broad platform support. When to use Hardware: archviz, scenes with many mirror-like reflections, cinematic animations with Metahuman GI ([NVIDIA UE5.4 RT Guide](https://dlss.download.nvidia.com/uebinarypackages/Documentation/UE5+Raytracing+Guideline+v5.4.pdf)).
+
+**[UE5 only] Lumen Surface Cache:**
+- An object must be at least ~4 cm in size to enter the Surface Cache. Yellow objects in GI = culled (too distant or too small).
+- Build modularly — the interior of a building as separate meshes. A single large "building" mesh will not generate correct cards for the interior.
+- Increase `Num Lumen Mesh Cards` (Static Mesh Editor → Build Settings) to 8–12 for interior-critical meshes (rooms need more cards than simple exterior props).
+
+**[UE5 only] Lumen tuning:**
+```ini
+; GI quality reduction (saves ~2ms on mid-range):
+r.Lumen.ScreenProbeGather.TracingOctahedronResolution=2   ; default ~2; reduce to 1 for low
+r.Lumen.ScreenProbeGather.DownsampleFactor=2
+r.Lumen.ScreenProbeGather.IntegrateDownsampleFactor=2     ; ~3x faster in UE5.6
+
+; Reflection quality reduction:
+r.Lumen.Reflections.DownsampleFactor=2
+r.Lumen.Reflections.MaxRoughnessToTrace=0.4               ; only shiny surfaces get RT reflections
+
+; Far Field (open worlds, requires HLOD1):
+r.LumenScene.FarField=1
+r.LumenScene.FarField.OcclusionOnly=1                      ; UE5.6: ~50% cheaper Far Field
+
+; Firefly suppression (UE5.6 default):
+r.Lumen.ScreenProbeGather.MaxRayIntensity=10
+```
+
+Sources: [StraySpark Lumen 60fps Guide](https://www.strayspark.studio/blog/ue5-lumen-optimization-60fps), [Tom Looman UE5.6 Highlights](https://tomlooman.com/unreal-engine-5-6-performance-highlights/)
+
+**[UE5 only] VSM tuning:**
+```ini
+r.Shadow.Virtual.MaxPhysicalPages=8192   ; for open world (default 4096)
+r.Shadow.Virtual.UseAsync=1              ; async compute, hides ~0.4ms on PS5/XSX
+r.Shadow.Virtual.Clipmap.LastLevel=20   ; reduce from 22 if horizon fog covers far distance
+r.Shadow.Virtual.ResolutionLodBiasDirectionalMoving=0.5  ; cheaper new pages during fast camera movement
+r.Shadow.Virtual.NonNanite.IncludeInCoarsePages=0        ; large gains for foliage-heavy scenes
+r.Shadow.Virtual.Cache.MaxFramesSinceLastUsed=20         ; reduce from 60 during fast WP streaming
+
+; Clipmap tuning for directional light:
+r.Shadow.Virtual.Clipmap.FirstLevel=6    ; default — finest level
+r.Shadow.Virtual.Clipmap.LastLevel=20    ; reduce from 22 if you have horizontal fog
+r.Shadow.Virtual.ResolutionLodBiasDirectional=0   ; 0 = full resolution (PC)
+```
+
+- Use `IES Profile` textures for realistic light shapes without extra light sources. Cost: one texture lookup.
+- `Light Functions` (material functions applied to lights) are expensive — they run a custom shader pass per light. Use sparingly for hero props.
+- MegaLights (UE5.4+): designed for very large numbers of dynamic shadow-casting sources at a reasonable cost — use when you genuinely need many local lights with shadows.
+- `r.DistanceFields.SupportEvenIfHardwareRayTracingSupported=0` — disable distance field generation when using Hardware Lumen only. Saves VRAM for DF atlases.
+
+**Lesser-known tricks:**
+
+- `r.Lumen.ScreenProbeGather.IntegrateDownsampleFactor=2` in UE5.6 reduces probe gathering cost by ~3× with minimal visual impact. One of the biggest free wins in UE5.6 ([Tom Looman UE5.6 highlights](https://tomlooman.com/unreal-engine-5-6-performance-highlights/)).
+- Lumen Cards count per mesh: increase `Num Lumen Mesh Cards` (Static Mesh Editor > Build Settings) from the default for interior-critical meshes (room interiors need 8–12 cards).
+- Surface Cache resolution: increase `r.LumenScene.SurfaceCache.CardMinResolution` only for hero props. Saves VRAM elsewhere.
+- VSM WPO shadow cost on foliage: in a PS5 test, disabling WPO shadow for floor foliage reduced cost from 8.2 ms to 3.1 ms. One checkbox.
+
+**Tools for this role:**
+Lumen Surface Cache view, VSM Visualize, `stat virtualshadowmaps`, `stat lumen`, `stat raytracing`, GPU Visualizer (ShadowDepths, Lumen passes)
+
+---
+
+### VFX / Niagara **[UE4 + UE5]**
+
+**[Deprecated in UE5]**: Cascade is available but not developed. Migrate to Niagara for all new VFX.
+
+**Common pitfalls:**
+
+- **Niagara fixed simulation bounds disabled** — by default, Niagara systems compute bounds dynamically each frame. For systems with predictable extents, use fixed bounds. Dynamic bounds require a CPU readback from GPU, stalling the pipeline.
+- **GPU simulation without LOD** — GPU simulations spawn particles at a cost, but the rendering cost scales with screen coverage. A 100k-particle GPU sim off-screen still pays compute overhead. Use Niagara's Significance Manager integration to scale simulation budget by screen importance.
+- **GPU sims disappear on camera rotation** — this is a fixed bounds trap. If the fixed bounds are off-screen, the GPU does not dispatch the compute shader and the effect disappears entirely. For travelling effects (projectile trails), expand bounds generously.
+- **Using GPU sim for small particle counts** — GPU dispatch overhead means GPU sims only pay off above ~1,000 particles. For 1–100 particles, use CPU simulation. For 1–1,000 particles, the decision depends on whether gameplay integration is needed ([Niagara optimization guide](https://morevfxacademy.com/complete-guide-to-niagara-vfx-optimization-in-unreal-engine/)).
+- **Spawning new Niagara Component per VFX event** — creates a UObject per effect instance. Pool Niagara components via `UNiagaraFunctionLibrary::SpawnSystemAtLocation` (automatic pooling in UE5) or implement a manual pool for high-frequency effects.
+- **CPU particles on GPU-heavy scenes** — CPU particles pay Game Thread cost per particle for every update. Use GPU simulation for high-count emitters (> ~500–1000 particles).
+- **Niagara Data Channel data missed** **[UE5.3+]** — NDC data is completely transient — it exists for a single tick. If you miss a frame, the data is gone ([Epic forum NDC discussion](https://forums.unrealengine.com/t/niagara-data-channel-niagara-emitters-not-taking-the-set-spawn-count/2599289)).
+
+**Recommended practices:**
+
+- Enable `Fixed Bounds` in Niagara System settings for effects with predictable spatial extents.
+- Set `Max GPU Particles Per Emitter` to a hard cap. Without a cap, a spawner parameter bug can create millions of particles and stall the GPU.
+- Use **Niagara Significance Manager** integration: register the system with a significance manager, drive `Scale By Significance` to reduce spawn rate, simulation resolution, or disable entirely for off-screen or distant effects. Built-in modes: `Distance` (closest to camera wins), `Age` (newest wins), `Custom`.
+- Use **Niagara Data Channels [UE5.3+]** for effects that need to query scene data. Data Channels enable GPU-side neighbor queries without CPU readbacks. Uses: bullet impacts spawning multiple effect types from one location, rain writing wetness data read by puddle splashes, global wind direction affecting all outdoor particle systems.
+- **Niagara GPU Simulation** advantages: particles can sample Distance Fields, Volume Textures, and Scene Depth for collision. Use for fire, smoke, and environmental effects.
+- **LOD via Niagara Scalability**: define scalability levels in Niagara System settings. `Quality Level 0` = no simulation, `3` = full quality. Bind to project scalability groups.
+- Cull particles by distance using `Cull Distance` on the Niagara Component. Start with screen-size-based culling via Significance Manager before hard kill distance.
+- Every Niagara system should have a `Niagara Effect Type` asset assigned — it is the global control center for scalability: cull distances, max instances, spawn count scales, and budget limits.
+- GPU particle Distance Field collision: uses the Global Distance Field — effective range ~10,000 units from camera. Beyond that range, collisions become unreliable. `Particle Radius Scale` default 0.1 is often too small; increase to 1.0–5.0 for visible effects.
+
+**[UE4 only] Cascade-specific:**
+- Cascade `LOD Check Time` controls how often LOD levels are evaluated. Default 0.025s (40 Hz). Reduce to 0.1s for background effects.
+- Cascade `Max Draw Count` limits visible sprite count per emitter.
+
+**Lesser-known tricks:**
+
+- `Niagara Debugger` (`Window > Niagara Debugger`): shows per-system runtime stats (particle count, GPU time, scalability level). Essential for identifying expensive VFX systems.
+- Distance Field Collision in Niagara GPU: enable via `Collision Module > GPU Collision Type = Distance Field`. No CPU involvement; works with Lumen's DF generation.
+- Render Target sampling in Niagara for gameplay-driven VFX: a Render Target updated by Blueprint (health state, power level) can drive Niagara simulation parameters via a texture sample.
+- `Niagara Data Interface: Skeletal Mesh` — sample bone/socket positions directly in GPU simulation. Use for character-attached sparks, blood drips.
+- Significance Manager crash bug warning: with aggressive culling and short-lived systems dying simultaneously during significance processing, a crash can occur — see [Epic's forum post on Niagara scalability crash](https://forums.unrealengine.com/t/niagara-scalability-crash-when-processing-significance/2611550) for the fix.
+
+**Tools for this role:**
+Niagara Debugger, `stat particles`, `stat niagara`, GPU Visualizer (Niagara pass), Significance Manager debug draw
+
+**CVars cheat sheet:**
+
+| CVar | Default | Notes | Engine |
+|---|---|---|---|
+| `fx.Niagara.MaxGPUParticlesSpawnPerFrame` | variable | Hard cap GPU spawns | UE5 |
+| `fx.Niagara.SystemSimulationTickBatchSize` | 8 | Batch GPU system ticks | UE5 |
+| `fx.NiagaraMaxGPUCount` | 1M | Global GPU particle cap | UE5 |
+| `fx.Niagara.QualityLevel` | 3 | Global quality scale (0=off) | UE5 |
+
+---
+
+### Audio **[UE4 + UE5]**
+
+**Common pitfalls:**
+
+- **Sound Cues as default in UE4 vs MetaSounds in UE5** — Sound Cues are Blueprint-like graphs executed on the Audio Thread. MetaSounds **[UE5 only]** are node-based DSP graphs with per-instance parameters. MetaSounds enable procedural audio, Quartz synchronization, and per-instance state without Blueprint overhead.
+- **Sound Concurrency not configured** — without Concurrency assets, the engine has no budget for how many simultaneous sounds can play. High-frequency gameplay (footsteps, gunshots) can spawn thousands of active sounds. Configure Sound Concurrency assets and assign them to Sound Classes.
+- **Streaming too many small sounds** — streaming is efficient for long ambient tracks (> 10–20 seconds). For short one-shot sounds, loading into memory is cheaper.
+- **No attenuation curves** — default linear rolloff is rarely appropriate for complex environments.
+- **Reverb Volumes without budget** — overlapping reverb zones overrun the Audio Thread budget.
+
+**Recommended practices:**
+
+- **Sound Classes** define categories (Music, SFX, Voice, Ambient). Assign concurrency, EQ, and volume controls per-class.
+- **Sound Concurrency**: define `MaxCount`, `ResolutionRule` (Stop Quietest / Prevent New), and `RetriggerTime` per concurrency asset. `USoundConcurrency::MaxCount` set to 1 for UI confirm sounds with `RetriggerTime = 0.5` prevents double-trigger on rapid button press.
+- **Stream Caching [UE4 + UE5]**: `au.streamcache.TrimCacheWhenOverBudget 1` and `au.streamcache.CacheSizeKB` to match your audio memory budget.
+- **Quartz [UE5 only]**: provides sample-accurate musical beat synchronization. Use for rhythm games, dynamic music systems, and synchronized SFX.
+- **MetaSounds [UE5 only]**: replace complex Sound Cue randomization trees with MetaSound inputs. Pass gameplay state as input values rather than routing sound branches on the Audio Thread. MetaSound input parameters can be driven by Gameplay Attributes or Subsystems, enabling fully reactive procedural audio without Blueprint tick polling.
+- Use `Attenuation Shape = Capsule` for corridor environments; `Sphere` for open spaces. Custom falloff curves for reverb blend allow gradual wet/dry transitions.
+- **Audio Mixer** is the default in UE4.24+ and UE5. Each source can route to one or more Submixes (SFX Bus, Music Bus, Voice Bus). Add effects at the submix level for efficient processing — one reverb instance on the Environment submix versus one per environmental sound.
+- Compress audio for shipping: `OGG Vorbis` at `Quality 40–60` for most SFX. `ADPCM` for short, frequently-triggered sounds (gunshots, footsteps) — faster decode, lower quality. `PCM` only for music where quality is critical and memory is not a constraint.
+- HRTF Spatialization: enable `Spatialization Algorithm = HRTF` in Sound Attenuation settings. HRTF adds CPU cost per virtualized source — budget carefully.
+
+**Lesser-known tricks:**
+
+- `au.Debug.SoundCues 1` — overlay active sound instances in the viewport with voice budget color coding.
+- `au.DisableAudioCaching 1` — forces audio to re-stream on every play (debugging only; never ship with this).
+
+---
+
+### Animations **[UE4 + UE5]**
+
+Skeletal mesh animation is one of the highest Game Thread costs in character-heavy projects. Three opt-in systems — URO, Animation Budget Allocator, and GPU Skin Cache — collectively cut CPU and GPU skinning cost dramatically when used together.
+
+**Common pitfalls:**
+
+- **URO not enabled per component** — Update Rate Optimizations (URO) allow animation evaluation to run at a reduced rate for distant or off-screen characters. It is opt-in per component.
+- **Animation Budget Allocator plugin not enabled** — the plugin (4.26+) dynamically allocates per-frame animation CPU budget, throttling or entirely skipping distant characters. Off by default.
+- **GPU Skin Cache disabled** — GPU Skin Cache moves skinning from vertex shader (runs once per draw call) to compute shader (runs once per mesh per frame). Required for Cloth simulation and Mesh Deformer (UE5). Enable in Project Settings > Rendering.
+- **Animation Blueprint Fast Path not maintained** — Fast Path executes nodes directly in native code without Blueprint VM overhead. Adding a single math node can break Fast Path for the entire Anim BP. Green lightning bolt in the Anim BP node = Fast Path active.
+- **Many morph targets on hero characters** — morph targets in UE4 run on CPU. In UE5, `r.MorphTarget.EnabledByDefault 1` moves them to GPU.
+- **Master/Leader Pose Component misused** — `SetLeaderPoseComponent` (renamed from `MasterPoseComponent` in UE5.1) drives multiple meshes from a single animation evaluation. All slave meshes share the same pose without individual evaluation cost. Correct for modular characters.
+
+**Recommended practices:**
+
+- **URO configuration** per character type: background NPCs → max 15 fps evaluation at 10 m+. Hero NPCs → 30 fps at 5 m+. Player character → no URO.
+- **Animation Budget Allocator**: enable plugin, set `Budget in Milliseconds` per scalability level (e.g., 2 ms on low, 4 ms on high).
+- **`SetLeaderPoseComponent` [UE5] / `SetMasterPoseComponent` [UE4]**: on character spawn, set a single "driver" mesh, then attach all cosmetic meshes as followers. One animation evaluation drives all.
+- **Anim BP node caching**: cache component references (Get Skeletal Mesh Component) in Update rather than re-querying per node.
+- **Control Rig for procedural IK [UE5]**: replaces custom IK solver Blueprints with a compiled graph that runs on the worker thread, not the Game Thread.
+- **GPU Skin Cache setup**: `r.SkinCache.Mode 1` (enables on all skeletal meshes). `r.SkinCache.Mode 2` is the recompute tangent mode (more expensive; only for cloth/Deformer use cases).
+- **`Anim Next [UE5.4+ experimental]`**: a rewrite of the animation graph execution model, optimized for batch processing. Experimental; not recommended for production without thorough testing.
+
+**Lesser-known tricks:**
+
+- `tick.AnimationBudgetAllocator.Enabled` CVar for runtime toggle of ABA.
+- Anim curves can drive material parameters, blend shape targets, and physics constraint settings — avoid Blueprint Tick polling for these by using curve-driven setups.
+- `r.SkeletalMeshLODBias` — global LOD bias for all skeletal meshes. Set to 1 on low-end platforms to force all meshes one LOD step lower.
+
+**Tools for this role:**
+Animation Insights channel, `stat game` (ComponentTick), `stat gpu` (SkinCache), Anim Blueprint debugger, GPU Skin Cache visualization
+
+**CVars cheat sheet:**
+
+| CVar | Default | Notes | Engine |
+|---|---|---|---|
+| `r.SkinCache.Mode` | 0 | 0=off, 1=on, 2=with recompute tangents | UE4 + UE5 |
+| `r.SkeletalMeshLODBias` | 0 | Global LOD offset for all skeletal meshes | UE4 + UE5 |
+| `a.URO.Enable` | 1 | URO master toggle (per component still required) | UE4 + UE5 |
+| `tick.AnimationBudgetAllocator.Enabled` | 1 (if plugin on) | ABA runtime toggle | UE4.26+ UE5 |
+| `r.MorphTarget.EnabledByDefault` | 0 | 1 = GPU morph targets | UE5 |
+
+---
+
+### UI / UMG / Slate **[UE4 + UE5]**
+
+**[CORRECTED] The old advice "Do not use UMG if possible" is misleading and outdated.** UMG is the standard UI framework for all Unreal projects in the 2020s. The real rules are: use Invalidation Box to prevent unnecessary widget redraws, control tick carefully, and prefer event-driven data bindings over per-frame polling.
+
+**Common pitfalls:**
+
+- **Per-frame Blueprint binding on widget properties** — the default `Bind` button in UMG creates a function called every frame (a "tick binding") that evaluates the expression and updates the widget even when the value hasn't changed.
+- **No Invalidation Box around complex widget trees** — without an Invalidation Box, every frame the renderer walks the full widget tree looking for dirty widgets. On a HUD with 100+ widgets, this is expensive.
+- **Retainer Box misuse** — Retainer Box renders a widget subtree to an off-screen Render Target at a specified update rate. Misused on static UI panels it adds Render Target overhead without benefit.
+- **High-frequency `Set Text` calls** — text layout and glyph rasterization are expensive. Throttle text updates.
+- **Widget creation/destruction in Tick** — spawning a `CreateWidget` inside Tick creates a UObject per frame. Pool reusable widgets.
+
+**Recommended practices:**
+
+- Replace tick bindings with **event-driven updates**: bind to a game delegate/dispatcher that fires only when the value changes.
+- Use **Invalidation Box** around static or slowly-changing widget trees. Set `Cache Relative Transforms = true` for child widgets that translate.
+- **Visibility flags for performance:**
+
+| Visibility | Render | Hit Test | Tick |
+|---|---|---|---|
+| Visible | Yes | Yes | Yes |
+| HitTestInvisible | Yes | No | Yes |
+| SelfHitTestInvisible | Yes | No (self only) | Yes |
+| Hidden | No | No | Yes |
+| Collapsed | No | No | No (layout skipped) |
+
+Use `Collapsed` for widgets that are not needed. `Hidden` still occupies layout space and ticks. `Collapsed` is the only mode that skips layout and tick entirely.
+
+- **Common UI [UE5 only]**: Epic's Common UI plugin provides platform-agnostic input routing, activatable widget stack management, and action bar generation.
+- **Texture Atlas**: pack small UI icons into a single texture atlas. Each texture slot in UMG requires a separate draw call. A 64-icon atlas uses one draw call; 64 individual textures use 64.
+- Use `Set Visibility` rather than `Add to Viewport / Remove from Viewport` for panels that toggle frequently.
+- For scrolling lists: `ListView` and `TileView` widgets virtualize — they create only enough widgets to fill the visible area, reusing them as the user scrolls.
+- **Font caching**: avoid high-resolution dynamic fonts in real-time UI. Pre-rasterize fonts at fixed sizes.
+
+**Lesser-known tricks:**
+
+- `Slate.Widget.Invalidation.Enabled 1` enables the Invalidation Forest system globally. Ensure "volatile" (per-frame changing) widgets are marked volatile with `SetIsVolatile(true)` in C++ or via tick binding status in UMG.
+- `Widget Reflector` tool (`Window > Widget Reflector`): visualizes the live widget tree with per-widget paint times.
+- Screen-space Render Targets for world-space UI: render a UMG widget to a Render Target and apply it as a material to a plane in the world.
+
+**Tools for this role:**
+Widget Reflector, `stat Slate`, `stat SlateRendering`, `stat UMG`
+
+---
+
+### Networking and Multiplayer **[UE4 + UE5]**
+
+**Common pitfalls:**
+
+- **`DORM_Never` on all actors** — the default dormancy means every actor sends replication checks every frame. Static world props (barrels, furniture) should be `DORM_DormantAll`. A dormant actor costs 0.13 ms total vs 15 ms for an always-replicating equivalent with 99.3% waste rate ([Reddit dormancy benchmark](https://www.reddit.com/r/UnrealEngine5/comments/1lzi6xg/networking_optimization_in_unreal_engine_5_with/)).
+- **Standard TArray replication for large collections** — replicates the full array on any change. Use `FFastArraySerializer` for arrays where individual element changes are frequent — it sends per-element deltas only.
+- **Missing Adaptive Net Update Frequency** — `NetUpdateFrequency` defaults to 100 (pawn). Without adaptive frequency, actors update the server at max frequency even when stationary.
+- **Multicast RPCs for cosmetics the server doesn't need** — `Multicast` RPC fires on server and all clients. For cosmetic-only effects (particle spawns), the server pays unnecessary cost. Use `Client` RPC or `Unreliable Multicast`.
+- **No bandwidth cap** — `TotalNetBandwidth` defaults to 15000 bytes/s, low for modern games.
+
+**Recommended practices:**
+
+- **Actor Dormancy**: set `DORM_DormantAll` on all static world props at level load. Call `FlushNetDormancy()` on an actor before changing its state.
+- **Push Model Replication**: use `MARK_PROPERTY_DIRTY_FROM_NAME` and `bIsPushBased = true` for infrequently-changed properties. Add `NetCore` to your module's dependencies or you will get a linker error.
+- **Replication Graph [UE4.20+ / UE5]**: for 50+ concurrent replicating actors per client, replace the default Net Driver with the Replication Graph plugin. Spatial grid nodes provide O(1) relevancy checks.
+- **Iris [UE5.4+ / default in UE5.5+]**: a rewrite of the replication data path. Enable via `net.Iris.UseIrisReplication=1`. Backward-compatible with existing UPROPERTY replication. Better CPU scalability at high player counts.
+- **RepNotify vs Replicated**: use `RepNotify` (ReplicatedUsing) when clients need to react to a state change with logic (update UI, play sound). Use bare `Replicated` for values clients read directly.
+- **DOREPLIFETIME_CONDITION**: `COND_OwnerOnly` for per-player private data (inventory, ability cooldowns), `COND_SkipOwner` for state the owner already knows, `COND_InitialOnly` for setup data that never changes after spawn.
+
+```cpp
+void AMyActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME_CONDITION(AMyActor, PrivateInventory, COND_OwnerOnly);
+    DOREPLIFETIME_CONDITION(AMyActor, ServerSimulatedPosition, COND_SkipOwner);
+    DOREPLIFETIME_CONDITION(AMyActor, CharacterClass, COND_InitialOnly);
+    FDoRepLifetimeParams PushParams;
+    PushParams.bIsPushBased = true;
+    DOREPLIFETIME_WITH_PARAMS_FAST(AMyActor, Health, PushParams);
+}
+```
+
+- **`FFastArraySerializer`**: use for inventory, ability lists, and any `TArray` replicated over the network where individual items change frequently. The Item struct inherits `FFastArraySerializerItem`; the List struct inherits `FFastArraySerializer`; mark dirty via `MarkItemDirty(Items[Idx])` ([ikrima.dev — Fast TArray Replication](https://ikrima.dev/ue4guide/networking/network-replication/fast-tarray-replication/)).
+- Set `MinNetUpdateFrequency = 2` and `NetUpdateFrequency = 100` with Adaptive Frequency enabled.
+
+**Lesser-known tricks:**
+
+- `net.Iris.ReplicationWriterMaxAllowedPacketsIfNotHugeObject` (default 3): controls per-batch packet cap in Iris.
+- `-NetTrace=1` command line: enables the networking trace channel for Networking Insights analysis.
+- `Dormancy.FlushNetDormancyOnSpawn` CVar: flush dormancy automatically on spawn for actors with initial state to transmit.
+- `GameplayDebugger` network category (`numpad '`): shows per-actor replication cost and update frequency in-game.
+
+**Tools for this role:**
+Networking Insights (`-NetTrace=1 -trace=net`), `stat net`, `stat netpackets`, `stat replication`
+
+**CVars cheat sheet:**
+
+| CVar | Default | Notes | Engine |
+|---|---|---|---|
+| `net.UseAdaptiveNetUpdateFrequency` | 0 | 1 = enable adaptive update frequency | UE4 + UE5 |
+| `TotalNetBandwidth` | 15000 | Bytes/sec server bandwidth cap | UE4 + UE5 |
+| `net.Iris.UseIrisReplication` | 0 | 1 = enable Iris replication | UE5.4+ |
+| `net.MaxNetTickRate` | 120 | Server tick rate | UE4 + UE5 |
+| `p.NetUpdateFrequency` (actor) | 100 | Max updates/sec per actor | UE4 + UE5 |
+
+---
+
+### QA / Build / Production **[UE4 + UE5]**
+
+**Common pitfalls:**
+
+- **Profiling in Editor instead of Test build** — Editor PIE adds 2–4× Game Thread overhead. All performance decisions from Editor numbers are unreliable.
+- **Shipping with DDC not pre-populated** — the Derived Data Cache (DDC) stores cooked shader and physics data. Cold DDC on a fresh checkout = full shader compilation on first cook.
+- **No automated performance regression testing** — manual profiling before milestones misses gradual regressions introduced over weeks.
+- **Cook errors treated as warnings** — cook warnings about missing assets, oversized textures, or unset LODs ship as production issues.
+
+**Recommended practices:**
+
+- **Always deliver from Test build**: profiling, performance reviews, and QA sign-off should happen on Test packaged builds.
+- **Gauntlet automation framework**: write `UAutomationTestBase` performance tests that run in CI, measure frame time, and fail on regression.
+- **LLM memory tracking**: add `ALLOW_LOW_LEVEL_MEM_TRACKER_IN_TEST=1` to your Test target.
+- **DDC pre-warm**: run on the build server and push results to a shared DDC. Epic's `Zen Store` (UE5.4+) replaces the legacy shared DDC with a content-addressable, version-tolerant cache server with REST API.
+- **BuildGraph**: use Epic's BuildGraph (`Engine/Build/Graph/Build.xml`) for reproducible builds.
+- **Memreport on staging**: run `Memreport -full` after a full gameplay session. Diff against the previous milestone to catch new leaks.
+- **PSO cache**: PS5 and XSX require PSO pre-compilation. Plan two cook passes: one for PSO capture playthrough, one for the final shipping build with the captured PSO cache included.
+- **IWYU and build speed**: keep `PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs` in all module Build.cs files. Never use `#include "Engine.h"` or `#include "UnrealEd.h"`. Set `bFasterWithoutUnity = true` for modules under heavy iteration.
+
+**Lesser-known tricks:**
+
+- `UE4 / UE5 Commandlets`: `-run=DerivedDataCache` for DDC warm, `-run=ResavePackages` for bulk package resave, `-run=WorldPartitionConvertCommandlet` for WP migration.
+- `AssetRegistry`: build the asset registry dump via `-DumpAssetRegistry` and diff it between builds to catch accidental asset additions.
+- `Automation.RunTests` console command with `-Unattended -NullRHI` allows headless automated test runs in CI without a display.
+- Module organization: keep `Public/` headers minimal and stable; put implementation in `Private/`. Use `PrivateDependencyModuleNames` for everything not in your public API. Target a clean build time under 3 minutes for your most-changed module.
+
+---
+
+### Tech Art **[UE4 + UE5]**
+
+Tech art sits at the intersection of all other disciplines. This section covers techniques specific to the tech art workflow.
+
+**Common pitfalls:**
+
+- **Runtime Virtual Texture (RVT) without fallback [UE5 only]** — RVT blends landscape material information into object materials. Without a fallback for platforms that don't support RVT, objects appear to float.
+- **Custom Depth / Stencil on many actors** — Custom Depth renders a second depth pass for marked actors. Each actor with `Custom Depth Pass = Enabled` adds a draw call. Use selectively; batch related actors using a single Stencil Value.
+- **Niagara + Distance Field queries on meshes without DF** — Niagara GPU simulations using Distance Field collision or queries fail silently on meshes without DF generated. The simulation looks wrong rather than crashing.
+- **Virtual Heightfield Mesh without LOD bias [UE5 only]** — Virtual Heightfield Mesh (VHM) renders landscape displacement. Without appropriate LOD bias, the patch count at LOD0 can exceed the draw budget.
+- **Static Switch permutation explosion in master materials** — 2ᴺ shader permutations (see Materials section). With N switches and various material instances, cook time and PSO stalls can multiply unexpectedly.
+- **Translucency sorting cost hidden in profiling** — translucent objects are sorted back-to-front every frame in CPU. Cost scales with the number of translucent actors, and is often invisible in GPU profilers but shows in the Render Thread.
+
+**Recommended practices:**
+
+- **Runtime Virtual Texture (RVT) [UE4.23+ / UE5]**: configure RVT in the landscape material to bake per-texel color, normal, and roughness. Objects intersecting the landscape sample from RVT for context-sensitive shading. Enabling RVT on a complex landscape can reduce landscape overdraw from orange/red in Shader Complexity to full green by caching expensive material evaluation ([Brushify RVT Bootcamp](https://www.youtube.com/watch?v=0-xXIMjlmqE)).
+
+RVT setup checklist:
+1. Create a `Runtime Virtual Texture` asset.
+2. Place a `Runtime Virtual Texture Volume` over the landscape.
+3. Assign the RVT asset to the volume; set bounds from the landscape.
+4. Add the RVT to the landscape's Virtual Textures array.
+5. Modify the landscape material: add `Runtime Virtual Texture Output` node.
+6. Modify prop materials: add `Runtime Virtual Texture Sample` node.
+
+- **Sparse Virtual Textures (SVT) [UE5 only]**: for very large terrain data (64k×64k textures). SVT pages-in only the visible mip levels.
+- **Render Target tricks**: drive procedural elements (lava flow, terrain deformation, decal accumulation) by rendering into Render Targets each frame or on demand. Use `Begin/EndDrawCanvasToRenderTarget` when performing multiple draws per frame — this reuses the FCanvas object instead of recreating it. GPU readback via `ReadRenderTargetPixels` is synchronous and stalls the CPU-GPU pipeline — use `EnqueueCopy` (non-blocking async readback) and consume the result a frame later.
+- **Custom Depth / Stencil**: use Stencil Value ranges per-system (0–15 for outline system, 16–31 for hit flash). Setup: `Project Settings → Rendering → Custom Depth-Stencil Pass → Enabled with Stencil`, then on the actor: `Rendering → Render Custom Depth Pass: ✓` and set `Custom Depth Stencil Value` (0–255). In the post-process material: `Scene Texture → Custom Stencil` + component mask.
+- **Distance Field visualization**: `show DistanceFieldAO`, `show MeshDistanceFields`. Identify meshes without DF coverage for Lumen or ambient occlusion.
+- **Niagara × Distance Fields**: use `QueryMeshDistanceField` in Niagara GPU scripts for collision, attraction, and reaction.
+- **View-dependent rendering tricks**: use `Camera Direction` node in materials to fade grazing-angle surfaces and drive LOD-aware material complexity.
+
+**Texture compression reference:**
+
+| Format | Channels | Size | Best For |
+|---|---|---|---|
+| DXT1 / BC1 | RGB (no alpha) | 4 bpp | Opaque diffuse |
+| BC4 | R only | 4 bpp | Single-channel masks, heightmaps |
+| BC5 | RG | 8 bpp | Normal maps (stores XY, derives Z) |
+| BC7 | RGBA | 8 bpp | High-quality diffuse with alpha |
+
+UE5 uses BC5 by default for Normal Map compression. Do not use BC7 for normal maps without manual shader handling. sRGB rule: normal maps, masks, roughness, metallic, AO — all linear (sRGB off). Albedo/Color — sRGB.
+
+**Post-process effect cost reference:**
+
+| Effect | Approximate Cost | Notes |
+|---|---|---|
+| Bloom (Quality 6) | ~1–2 ms | Quality 0–2 significantly cheaper; 4+ uses convolution |
+| Depth of Field (Cinematic) | ~2–4 ms | Gaussian DoF significantly cheaper |
+| Motion Blur (Quality 4) | ~0.5–1 ms | Adds velocity buffer read + reconstruction pass |
+| Chromatic Aberration | ~0.1 ms | Minor |
+| Vignette | Negligible | |
+
+```ini
+r.MotionBlurQuality 0          ; 0=off, 4=max quality
+r.DepthOfFieldQuality 0        ; 0=off, 4=max
+r.BloomQuality 5               ; 0=off, 5=default, 6=convolution (expensive)
+```
+
+**TSR vs DLSS vs FSR [UE5 only]:**
+TSR is Epic's built-in solution, fully integrated with Lumen, Nanite, and the velocity buffer. Best quality-to-compatibility ratio — no plugin required. Can produce ghosting/smearing on fast-moving objects with WPO or PDO. DLSS generally produces the best motion clarity ([community comparisons](https://www.reddit.com/r/nvidia/comments/wb3dh4/dlss_vs_tsr_vs_fsr_20_motion_clarity_comparison/)). FSR has the widest hardware compatibility. All three temporal AA methods require accurate velocity vectors — WPO and PDO must write correct velocity (`Output Velocity` enabled).
+
+Auto-Exposure: three metering modes: Manual (fixed EV100 — predictable, required for cutscenes), Histogram (physically correct), Basic (legacy, confused by bright skyboxes). UE5.1+ breaking change: old `Min/Max Brightness` replaced by `Min/Max EV100` — check settings in projects migrated from UE4.
+
+VT Pool Size tuning:
+```
+r.VT.PoolSizeScale 1.0       ; scale multiplier for all fixed pool sizes
+r.VT.Residency.Show 1        ; on-screen HUD showing pool occupancy per format
+r.VT.Residency.Notify 1      ; notification when the pool hits 100%
+r.VT.DumpPoolUsage            ; dump page counts per texture asset
+```
+
+Texture streaming pool: never ship `r.Streaming.PoolSize 0` — it means "unlimited" and will crash the engine. Calibration method: temporarily set `r.Streaming.PoolSize 1`, fly through the level, note the peak warning value, use that value + a safety margin ([TechArtHub's streaming pool guide](https://techarthub.com/fixing-texture-streaming-pool-over-budget-in-unreal/)).
+
+**Lesser-known tricks:**
+
+- **Shared Wrap Sampler — going beyond the 16-sampler limit**: UE5's `Shared:Wrap` and `Shared:Clamp` share two engine-wide sampler states across all textures, allowing a material to reference up to 128 textures ([Reddit discovery thread](https://www.reddit.com/r/unrealengine/comments/3myppm/til_you_can_use_more_than_16_texture_samplers_by/)). When to use: when the Material editor reports "too many texture samplers" or a landscape material requires more than 16 unique textures.
+- **Material Attributes pin system**: enable `Use Material Attributes` and use `BlendMaterialAttributes` to lerp between two complete material structs — `BaseLayer` → `WetnessLayer` → `SnowLayer` without spaghetti wire routing.
+- `r.VT.FeedbackFactor` — controls how aggressively Virtual Textures stream. Higher = faster streaming, higher I/O load.
+- `ShowFlag.ReflectionEnvironment 0` — disable reflection captures to isolate Lumen reflection cost.
+- `r.ReflectionCaptureResolution` — lower from 128 to 64 for background reflection captures. Saves VRAM with minimal visual impact on non-mirror surfaces.
+- `r.GBuffer.Format 1` — reduce GBuffer bit depth for memory savings (some quality loss on normals and roughness precision).
+- Quad Overdraw View Mode: `View → Optimization Viewmodes → Shader Complexity & Quads` reveals how many GPU quads (2×2 pixel groups) are wasted by sub-pixel triangles.
+- LUT Packed Textures: instead of sampling multiple 1-channel textures, pack them into a single RGBA texture. Standard Substance Painter packing: R = AO, G = Roughness, B = Metallic.
+
+**Tools for this role:**
+`r.VT.FeedbackFactor`, Custom Depth/Stencil, `show DistanceFieldAO`, `show MeshDistanceFields`, Material Stats, `stat shadercompiling`, RenderDoc
+
+**CVars cheat sheet:**
+
+| CVar | Default | Notes | Engine |
+|---|---|---|---|
+| `r.VT.Enable` | 1 | Virtual Texture master switch | UE4.23+ UE5 |
+| `r.VT.PoolSizeScale` | 1.0 | VT pool size multiplier | UE4 + UE5 |
+| `r.Streaming.PoolSize` | 800 | MB; NEVER set to 0 | UE4 + UE5 |
+| `r.ReflectionCaptureResolution` | 128 | Reduce to 64 for background | UE4 + UE5 |
+| `r.GBuffer.Format` | 0 | 1 = reduced precision, saves VRAM | UE4 + UE5 |
+| `r.EyeAdaptation.MethodOverride` | -1 | -1=none, 0=basic, 1=histogram, 2=manual | UE4 + UE5 |
+
+---
+
+### Last Resort Methods **[UE4 + UE5]**
+
+These are valid tools but should be used only after profiling identifies a specific bottleneck that targeted fixes can't fully address.
+
+- **`r.ScreenPercentage`** — render at a sub-native resolution. 75% saves ~44% of fill rate. TSR/DLSS at 50–66% with temporal reconstruction can match native visual quality with significant savings.
+- **Scalability Levels**: the built-in scalability system adjusts CVars globally per quality tier. Customize `BaseScalability.ini`:
+
+```ini
+[ShadowQuality@0]
+r.Shadow.Virtual.MaxPhysicalPages=1024
+r.Shadow.Virtual.ResolutionLodBiasDirectional=2.0
+r.ShadowQuality=0
+
+[PostProcessQuality@0]
+r.MotionBlurQuality=0
+r.AmbientOcclusionMipLevelFactor=1.0
+r.DepthOfFieldQuality=0
+
+[TextureQuality@0]
+r.Streaming.MipBias=1
+r.Streaming.AmortizeCPUToGPUCopy=0
+```
+
+- **`r.LODDistanceFactor`** — multiplier on all LOD distance thresholds. Values < 1 force lower LODs earlier.
+- **Disable individual post-process passes**: `r.MotionBlurQuality 0`, `r.BloomQuality 0`, `r.SSR.Quality 0`, `r.AmbientOcclusion.Intensity 0`.
+- **CPU physics simplification**: reduce physics substeps (`p.SubstepMaxSubsteps`), disable per-object physics below a velocity threshold.
+- **`bUseBackgroundThreadForUpdate`** on AI components — moves AIPerception and behavior tree ticks to background threads.
+
+**Scalability CVars quick reference by category:**
+
+| Category | Key CVars | UE4 range | UE5 range |
+|---|---|---|---|
+| Resolution | `r.ScreenPercentage` | 50–100 | 50–100 (TSR supplements) |
+| Nanite | `r.Nanite.MaxPixelsPerEdge` | N/A | 1–8 |
+| Lumen | `r.Lumen.ScreenProbeGather.DownsampleFactor` | N/A | 1–4 |
+| Shadows | `r.ShadowQuality` | 0–5 | 0–5 (VSM in UE5) |
+| Streaming | `r.Streaming.MipBias` | 0–3 | 0–3 |
+| VFX | `fx.Niagara.QualityLevel` | N/A | 0–3 |
+| PostProcess | `r.PostProcessAAQuality` | 0–6 | 0–6 |
+
+---
+
+## Optimization Sweep Steps (Pre-Milestone Checklist)
+
+### Map Objects
+
+- [ ] All static meshes have correct Mobility (Static / Stationary / Moveable). Static is cheapest for lighting; avoid Moveable on props that never move.
+- [ ] Unnecessary actors removed (debug helpers, placeholder volumes, unused triggers).
+- [ ] Cull Distance Volumes placed in all densely-populated areas with distance/size arrays configured.
+- [ ] Level Instances / Packed Level Actors used for repeated modular sets **[UE5 only]**.
+- [ ] World Partition Runtime Grid Cell Size and Loading Range appropriate for world scale **[UE5 only]**.
+- [ ] One-File-Per-Actor in source control: all actors committed, no missing references **[UE5 only]**.
+- [ ] HLOD layers built and validated. No "Lowest Available LOD" for landscape HLOD **[UE5 only]**.
+- [ ] Runtime Cell Transformers configured for decorative static meshes **[UE5.5+ only]**.
+
+### Meshes / Models
+
+- [ ] All non-Nanite static meshes have 3–4 LOD levels configured with `LODGroup = LargeProp / SmallProp / Vegetation`.
+- [ ] Nanite meshes have Fallback Triangle Percent and Fallback Relative Error set (not at defaults for decorative props) **[UE5 only]**.
+- [ ] GPU Skin Cache enabled in Project Settings for all projects with skeletal meshes.
+- [ ] Skeletal meshes have URO enabled for non-player characters.
+- [ ] Collision meshes are simplified (not complex-as-simple for high-poly meshes).
+- [ ] Distance Field generation confirmed for all Lumen-critical and AO-relevant meshes.
+- [ ] No Nanite on meshes below ~300 triangles **[UE5 only]**.
+- [ ] WPO Disable Distance set on foliage assets **[UE5 only]**.
+- [ ] Nanite WPO foliage: using opaque geometry leaves or Pivot Painter 2 approach **[UE5 only]**.
+- [ ] No procedural foliage collision (use proximity sphere proxy instead).
+
+### Lighting
+
+- [ ] Shadow-casting light count audited. Only key lights cast shadows; fill lights do not.
+- [ ] VSM Page Pool sized for the world: `r.Shadow.Virtual.MaxPhysicalPages` **[UE5 only]**.
+- [ ] Lumen CVars tuned per scalability tier (DownsampleFactor, TracingOctahedronResolution) **[UE5 only]**.
+- [ ] Lightmass builds complete and lightmap resolution appropriate **[UE4 only]**.
+- [ ] Stationary Light overlap count verified — no more than 4 overlapping Stationary lights **[UE4 only]**.
+- [ ] Reflection Captures placed and built. RVT configured for landscape blending **[UE4 + UE5]**.
+- [ ] Hardware vs Software Lumen choice confirmed and documented **[UE5 only]**.
+- [ ] Lumen building meshes modular (separate walls, floors, ceilings for interior GI) **[UE5 only]**.
+- [ ] Emissive light sources backed with Point/Spot Light for stable GI during cuts **[UE5 only]**.
+- [ ] `r.LumenScene.FarField.OcclusionOnly=1` enabled in UE5.6 for ~50% Far Field cost savings **[UE5.6+]**.
+
+### Volumetrics
+
+- [ ] Volumetric Fog Grid Size tuned: `r.VolumetricFog.GridPixelSize`, `r.VolumetricFog.GridSizeZ`.
+- [ ] Volumetric Clouds shadow map ray count reduced for non-hero shots.
+- [ ] Height Fog disabled or simple on platforms where volumetrics are too expensive.
+- [ ] Fog bounds correct — no fog volume covering zero actual player area.
+
+### Post Processing
+
+- [ ] Post Process Volume(s) with `Infinite Extent` — only one should exist at the project root.
+- [ ] Motion Blur, Depth of Field, Screen Space Reflections disabled or quality-reduced per scalability tier.
+- [ ] Bloom kernel type: Convolution Bloom is expensive. Gaussian Bloom default is fine for most titles.
+- [ ] TSR / DLSS / FSR configured and tested at target render resolution **[UE5 only]**.
+- [ ] `r.PostProcessAAQuality` set appropriately per platform: 4 (TAA default), 6 (TSR high quality **[UE5 only]**).
+- [ ] Auto-Exposure metering mode correct; UE5.1+ projects using `Min/Max EV100` not `Min/Max Brightness`.
+
+### Streaming and Memory
+
+- [ ] Texture streaming pool sized correctly: `r.Streaming.PoolSize` (MB). Default 800 MB; open world PC typically 2048–4096 MB.
+- [ ] Nanite streaming pool sized: `r.Nanite.Streaming.StreamingPoolSize` (MB).
+- [ ] No synchronous asset loads (`LoadSynchronous` in Tick or hot paths). Audit with Insights loadtime channel.
+- [ ] Soft references used for large assets loaded on demand. Hard references audited with Size Map.
+- [ ] Level Streaming vs World Partition streaming: no mixing of old Level Streaming with World Partition in the same world **[UE5 only]**.
+- [ ] VT pool size adequate (`r.VT.PoolSizeScale` and per-pool settings). Monitor with `r.VT.Residency.Show 1`.
+
+### Networking Sweep (Multiplayer Titles)
+
+- [ ] Dormancy set on all static world actors (`DORM_DormantAll` + `FlushNetDormancy` on state change).
+- [ ] Push Model enabled for frequently-polled replicated properties.
+- [ ] `FFastArraySerializer` used for all replicated TArrays with per-element changes.
+- [ ] `NetUpdateFrequency` and `MinNetUpdateFrequency` configured with Adaptive Frequency enabled.
+- [ ] RPC reliability audit: `Unreliable` for cosmetics, `Reliable` only for critical gameplay events.
+- [ ] Iris migration evaluated for projects shipping UE5.5+ **[UE5 only]**.
+
+### Build and Cook Validation
+
+- [ ] All maps cook clean with zero errors and minimal warnings.
+- [ ] PSO cache captured from a gameplay playthrough and included in the cook **[console / PC shipping]**.
+- [ ] DDC populated on build servers (no cold DDC on CI).
+- [ ] Test build profiling pass completed with Insights (`cpu,frame,gpu,bookmark`).
+- [ ] Automation test suite green (Blueprint compilation, map opens, custom perf tests).
+- [ ] Memory budget verified on target platform hardware (not developer workstation).
+
+---
+
+## Top 30 Most Common Mistakes
+
+| # | Mistake | Why It Hurts | Fix | Engine |
+|---|---|---|---|---|
+| 1 | Profiling in Editor PIE | 2–4× Game Thread overhead; all numbers unreliable | Always profile in Test packaged build | UE4 + UE5 |
+| 2 | Tick enabled on every actor | Per-frame VM dispatch per actor even with empty graphs | Uncheck Start with Tick Enabled; enable per need | UE4 + UE5 |
+| 3 | `Get All Actors Of Class` in Tick | O(n) world scan + TArray allocation every frame | Manager/subsystem registration pattern | UE4 + UE5 |
+| 4 | Hard reference casts in UI Blueprints | Entire character class tree loads with every UI asset | Use interfaces; soft references; base type pins | UE4 + UE5 |
+| 5 | Nanite on simple meshes (< 300 tri) | Cluster overhead > geometry savings; ~3 ms wasted for a handful of simple props | Use ISM batching for simple geometry | UE5 only |
+| 6 | Nanite + Masked + WPO on foliage | Programmable Rasterizer = 2–4× Nanite cost; VSM shadow invalidation spike | Opaque geometry leaves; disable WPO shadow eval; set WPO Disable Distance | UE5 only |
+| 7 | VSM Page Pool left at default 4096 in open world | Shadow stippling artifacts; overflow | `r.Shadow.Virtual.MaxPhysicalPages=8192` | UE5 only |
+| 8 | Many Point Lights with Cast Shadows | Each VSM local light owns shadow pages; page pool overflow | Remove shadows from fill lights; use MegaLights for many dynamic lights | UE5 only |
+| 9 | Lumen at Epic scalability without tuning | Designed for benchmarking hardware; too expensive in production | Tune DownsampleFactor, OctahedronResolution, MaxRoughnessToTrace per tier | UE5 only |
+| 10 | Monolithic building mesh for Lumen | Interior gets no Lumen Cards → pink GI artifacts | Build modularly (walls, floor, ceiling separate) | UE5 only |
+| 11 | Raw `UObject*` without `UPROPERTY` | GC collects object; dangling pointer | `UPROPERTY()` or `TObjectPtr<>` | UE4 + UE5 |
+| 12 | Pure Blueprint function wired to multiple nodes | Re-evaluates N times for N consumers | Convert to impure; cache in variable | UE4 + UE5 |
+| 13 | `FName` constructed from string in hot path | Thread lock + table search every call | `static const FName` | UE4 + UE5 |
+| 14 | Array `Empty()` instead of `Reset()` in per-frame use | Frees and reallocates heap every frame | `Reset()` preserves allocation | UE4 + UE5 |
+| 15 | `RemoveAt()` instead of `RemoveAtSwap()` on unordered arrays | O(n) shift vs O(1) swap | Use `RemoveAtSwap` when order doesn't matter | UE4 + UE5 |
+| 16 | Missing `Replicates = true` on networked actor | No variables replicate, no RPCs fire | Check Class Defaults → Replication → Replicates | UE4 + UE5 |
+| 17 | Actor dormancy left at `DORM_Never` on static world props | Per-frame replication polling on props that never change; 15 ms vs 0.13 ms per actor | `DORM_DormantAll` + `FlushNetDormancy` on change | UE4 + UE5 |
+| 18 | Static Switch explosion in master material | 2ᴺ shader permutations; cook bloat; PSO stalls | Limit to < 6 switches; use Material Layering; Material Quality Switch | UE4 + UE5 |
+| 19 | No URO on background NPCs | Full animation evaluation on all characters every frame | Enable URO per-component; use Animation Budget Allocator | UE4 + UE5 |
+| 20 | UMG tick bindings for frequently-updated properties | Per-frame evaluation even when value unchanged | Event-driven updates via dispatchers | UE4 + UE5 |
+| 21 | UMG `Hidden` instead of `Collapsed` for invisible widgets | `Hidden` still ticks and occupies layout | `Collapsed` skips layout and tick | UE4 + UE5 |
+| 22 | Sound Concurrency not configured | Uncapped simultaneous voices; audio thread overrun | Create Concurrency assets; assign to Sound Classes | UE4 + UE5 |
+| 23 | `std::shared_ptr<UObject>` | GC unaware; double-free / use-after-free | `UPROPERTY` / `TStrongObjectPtr` for UObjects | UE4 + UE5 |
+| 24 | `this` captured raw in lambda delegates | Crash when actor is GC'd before lambda fires | `AddWeakLambda` or `MakeWeakObjectPtr` capture | UE4 + UE5 |
+| 25 | Construction Script spawning actors | Orphaned actors per property change in editor | Child Actor Components or BeginPlay spawning | UE4 + UE5 |
+| 26 | Fallback Mesh at `Fallback Relative Error = 0` in Nanite assets | Fallback copy = full source poly count; 100–400 MB VRAM bloat | Set Fallback Triangle Percent = 1–5%; Relative Error = 1.0 | UE5 only |
+| 27 | Classic tessellation in UE5 project | Removed in UE5.0; material won't compile | Use Nanite Displacement (UE5.2+) | UE5 only |
+| 28 | Blueprint Nativization expected in UE5 | Removed in UE5.0 | C++ Blueprint Function Libraries for hot paths | UE5 only |
+| 29 | World Composition for new UE5 open world | Not developed; lacks WP features | World Partition for all new UE5 open world projects | UE5 only |
+| 30 | HLOD "Lowest Available LOD" for landscape | Gray blob HLOD; visual regression and misleading perf data | Set Specific LOD = 4–5 in World Settings HLOD Setups | UE5 only |
+
+---
+
+## CVars Quick Reference
+
+### Nanite CVars **[UE5 only]**
+
+| CVar | Default | Tuning Notes |
+|---|---|---|
+| `r.Nanite.MaxPixelsPerEdge` | 1 | Higher = fewer triangles. Scalability: 1 (high), 2 (med), 4 (low) |
+| `r.Nanite.Streaming.StreamingPoolSize` | 512 | MB. Increase for large open worlds; reduce for memory-constrained |
+| `r.Nanite.Tessellation` | 0 | 1 = enable Nanite Displacement (requires plugin) |
+| `r.Nanite.DicingRate` | 2 | Tessellation density. 1–2 for hero, 4–8 for background |
+| `r.Nanite.AllowTessellation` | 0 | Enable per-mesh tessellation flag |
+
+### Lumen CVars **[UE5 only]**
+
+| CVar | Default | Tuning Notes |
+|---|---|---|
+| `r.Lumen.ScreenProbeGather.TracingOctahedronResolution` | 8 | Lower = faster, noisier. 4 is common for mid-range |
+| `r.Lumen.ScreenProbeGather.DownsampleFactor` | 1 | 2 = large gains at some quality cost |
+| `r.Lumen.ScreenProbeGather.IntegrateDownsampleFactor` | 1 | 2 = ~3× faster in UE5.6 |
+| `r.Lumen.Reflections.DownsampleFactor` | 1 | 2 saves ~1–2 ms |
+| `r.Lumen.Reflections.MaxRoughnessToTrace` | 0.6 | Lower = fewer surfaces get RT reflections |
+| `r.LumenScene.FarField` | 0 | 1 = enable Far Field (>1km, needs HLOD1) |
+| `r.LumenScene.FarField.OcclusionOnly` | 0 | 1 = ~50% cheaper Far Field in UE5.6 |
+| `r.LumenScene.SurfaceCache.MeshCardsMinSize` | 4 | cm. Lower = more small meshes in Surface Cache |
+| `r.LumenScene.SurfaceCache.CardMinResolution` | 4 | Increase only for hero props |
+| `r.Lumen.ScreenProbeGather.MaxRayIntensity` | 10 | Firefly suppression (UE5.6 default) |
+
+### Virtual Shadow Maps CVars **[UE5 only]**
+
+| CVar | Default | Tuning Notes |
+|---|---|---|
+| `r.Shadow.Virtual.MaxPhysicalPages` | 4096 | 8192 for open world PC/PS5/XSX |
+| `r.Shadow.Virtual.UseAsync` | 0 | 1 = async compute, hides ~0.4ms |
+| `r.Shadow.Virtual.ResolutionLodBiasDirectional` | 0 | 1.0 for Steam Deck / low-end |
+| `r.Shadow.Virtual.Clipmap.LastLevel` | 22 | Reduce to 20 if distant fog covers shadow range |
+| `r.Shadow.Virtual.ResolutionLodBiasDirectionalMoving` | 0 | 0.5 = cheaper shadow pages during fast movement |
+| `r.Shadow.Virtual.NonNanite.IncludeInCoarsePages` | 1 | 0 = large gains for foliage-heavy scenes |
+| `r.Shadow.Virtual.Cache.MaxFramesSinceLastUsed` | 60 | Reduce to 20 during fast WP streaming |
+| `r.Shadow.Virtual.Cache.MaxMaterialPositionInvalidationRange` | 10 | Limit WPO shadow invalidation radius |
+| `r.Shadow.Virtual.Cache.DrawInvalidatingBounds` | 0 | Debug: green boxes = VSM cache invalidators |
+
+### Streaming CVars **[UE4 + UE5]**
+
+| CVar | Default | Tuning Notes |
+|---|---|---|
+| `r.Streaming.PoolSize` | 800 | MB. Open world PC: 2048–4096; NEVER 0 |
+| `r.Streaming.MipBias` | 0 | 1–2 reduces texture quality to save memory |
+| `r.Streaming.LimitPoolSizeToVRAM` | 0 | 1 = auto-cap pool to available VRAM |
+| `r.Streaming.MaxTempMemoryAllowed` | 50 | MB temporary upload budget |
+
+### Niagara CVars **[UE5 primarily; some UE4]**
+
+| CVar | Default | Tuning Notes |
+|---|---|---|
+| `fx.Niagara.QualityLevel` | 3 | 0=off, 3=full. Bind to scalability |
+| `fx.Niagara.SystemSimulationTickBatchSize` | 8 | Higher = more GPU batch efficiency |
+| `fx.NiagaraMaxGPUCount` | 1000000 | Hard cap GPU particle count |
+| `fx.Niagara.MaxGPUParticlesSpawnPerFrame` | variable | Hard cap GPU spawns per frame |
+
+### Replication CVars **[UE4 + UE5]**
+
+| CVar | Default | Tuning Notes |
+|---|---|---|
+| `net.UseAdaptiveNetUpdateFrequency` | 0 | 1 = enable adaptive frequency |
+| `TotalNetBandwidth` | 15000 | Bytes/sec. Increase for modern games |
+| `net.Iris.UseIrisReplication` | 0 | 1 = Iris (UE5.4+) |
+| `net.MaxNetTickRate` | 120 | Server tick rate cap |
+
+### Animation CVars **[UE4 + UE5]**
+
+| CVar | Default | Tuning Notes |
+|---|---|---|
+| `a.URO.Enable` | 1 | Per-component opt-in still required |
+| `r.SkinCache.Mode` | 0 | 0=off, 1=on, 2=with recompute tangents |
+| `r.SkeletalMeshLODBias` | 0 | +1 = all meshes one LOD lower globally |
+| `r.MorphTarget.EnabledByDefault` | 0 | 1 = GPU morph targets (UE5) |
+| `tick.AnimationBudgetAllocator.Enabled` | 1* | Plugin must be enabled (*if plugin on) |
+| `tick.AllowBatchedTicks` | 0 | 1 = batch similar tick functions (UE5.5+) |
+
+### Materials and Post-Process CVars **[UE4 + UE5]**
+
+| CVar | Default | Tuning Notes |
+|---|---|---|
+| `r.MaterialQualityLevel` | 3 | 0=Low, 1=Medium, 2=High, 3=Epic |
+| `r.MaxAnisotropy` | 4 | Texture filter quality |
+| `r.BloomQuality` | 5 | 0=off, 5=default, 6=convolution |
+| `r.MotionBlurQuality` | 4 | 0=off, 4=max |
+| `r.DepthOfFieldQuality` | 4 | 0=off, 4=max |
+| `r.EyeAdaptation.MethodOverride` | -1 | -1=none, 0=basic, 1=histogram, 2=manual |
+| `r.CompileShadersOnDemand` | 1 | 0 = compile all during cook |
+| `r.ShaderPipelineCache.Enabled` | 1 | PSO cache usage |
+
+### GC and Code CVars **[UE4 + UE5]**
+
+| CVar | Default | Tuning Notes |
+|---|---|---|
+| `gc.TimeBetweenPurgingPendingKillObjects` | 60 | Seconds between GC passes |
+| `gc.MaxObjectsNotConsideredByGC` | 0 | Objects above this index skipped in marking |
+| `gc.AssetClusteringEnabled` | 1 | GC clustering for assets |
+
+### Occlusion, Volumetrics, and Environment CVars **[UE4 + UE5]**
+
+| CVar | Default | Tuning Notes |
+|---|---|---|
+| `r.HZBOcclusion` | 1 | Set 0 to debug HZB culling artifacts |
+| `r.VolumetricFog.GridPixelSize` | 16 | Tile size per froxel (8 = high quality) |
+| `r.VolumetricFog.GridSizeZ` | 64 | Z slices (128 = smoother light shafts) |
+| `r.VT.PoolSizeScale` | 1.0 | Scale multiplier for all VT pool sizes |
+| `r.VT.Residency.Show` | 0 | Pool occupancy HUD |
+| `foliage.DensityScale` | 1.0 | Scale foliage instance counts per scalability |
+| `r.AmbientOcclusion.Intensity` | 1.0 | Set to 0 when using Lumen GI |
+| `r.ReflectionCaptureResolution` | 128 | Reduce to 64 for background captures |
+
+---
+
+## Bibliography and Further Reading
+
+### Talks (Unreal Fest, GDC)
+
+- [Optimizing the Game Thread — Unreal Fest 2024 (Jake Simpson)](https://www.youtube.com/watch?v=KxREK-DYu70)
+- [Nanite for Artists — GDC 2024](https://www.youtube.com/watch?v=eoxYceDfKEM)
+- [An Artist's Guide to Nanite Tessellation — Unreal Fest 2024](https://www.youtube.com/watch?v=6igUsOp8FdA)
+- [The Future of Nanite Foliage — Unreal Fest Stockholm 2025](https://www.youtube.com/watch?v=aZr-mWAzoTg)
+- [TSR/Nanite/Lumen/VSM Insights — Unreal Fest Gold Coast 2024](https://www.youtube.com/watch?v=szgnZx2b0Zg)
+- [Scaling for Quality and Performance — Unreal Fest Bali 2025](https://www.youtube.com/watch?v=Q1whHlGJB_o)
+- [Lumen with Immortalis — Arm/Epic Unreal Fest 2023](https://www.slideshare.net/slideshow/unreal-fest-2023-lumen-with-immortalis/266167635)
+- [Culling & Occlusion in Unreal (2025)](https://www.youtube.com/watch?v=wOdpF4WMckE)
+
+### Blogs and Articles
+
+**Tom Looman:**
+- [Tom Looman — UE5.6 Performance Highlights](https://tomlooman.com/unreal-engine-5-6-performance-highlights/)
+- [Tom Looman — UE5.5 Performance Highlights](https://tomlooman.com/unreal-engine-5-5-performance-highlights/)
+- [Tom Looman — Adding Counters and Traces](https://tomlooman.com/unreal-engine-profiling-stat-commands/)
+- [Tom Looman — Asset Manager and Async Loading](https://tomlooman.com/unreal-engine-asset-manager-async-loading/)
+- [Tom Looman — Optimization Talk](https://tomlooman.com/unreal-engine-optimization-talk/)
+
+**Ben Cloward:**
+- [Ben Cloward — HLSL Tutorial (YouTube)](https://www.youtube.com/watch?v=qaNPY4alhQs)
+
+**William Faucher:**
+- [William Faucher YouTube Channel](https://www.youtube.com/@WilliamFaucher) — Lumen, lighting, cinematic rendering
+
+**Alex Forsythe:**
+- [Alex Forsythe — Blueprints vs C++](http://awforsythe.com/unreal/blueprints_vs_cpp/)
+- [Alex Forsythe YouTube Channel](https://www.youtube.com/@AlexForsythe)
+
+**StraySpark:**
+- [StraySpark — World Partition Deep Dive](https://www.strayspark.studio/blog/ue5-world-partition-deep-dive-streaming-hlod)
+- [StraySpark — VSM Optimization for Open Worlds](https://www.strayspark.studio/blog/virtual-shadow-map-optimization-open-worlds-ue5-7)
+- [StraySpark — Lumen 60fps Guide](https://www.strayspark.studio/blog/ue5-lumen-optimization-60fps)
+- [StraySpark — Nanite Foliage Guide](https://www.strayspark.studio/blog/nanite-foliage-ue5-complete-guide)
+
+**Intel:**
+- [Intel — UE5 Optimization Guide Chapter 2](https://www.intel.com/content/www/us/en/developer/articles/technical/unreal-engine-optimization-chapter-2.html)
+- [Intel — UE5 Profiling Fundamentals](https://www.intel.com/content/www/us/en/developer/articles/technical/unreal-engine-optimization-profiling-fundamentals.html)
+
+**AMD GPUOpen:**
+- [AMD GPUOpen — Unreal Engine Performance Guide](https://gpuopen.com/learn/unreal-engine-performance-guide/)
+
+**NVIDIA:**
+- [NVIDIA — UE5.4 Raytracing Guide (PDF)](https://dlss.download.nvidia.com/uebinarypackages/Documentation/UE5+Raytracing+Guideline+v5.4.pdf)
+
+**Other Technical References:**
+- [Intax — Blueprint VM Performance Guide](https://intaxwashere.github.io/blueprint-performance/)
+- [George Prosser — Optimizing TWeakObjectPtr](https://prosser.io/optimizing-tweakobjectptr-usage/)
+- [xbloom.io — World Partition Internals](https://xbloom.io/2025/10/24/unreals-world-partition-internals/)
+- [Chris McCole — Culling in UE4/UE5](https://www.chrismccole.com/blog/culling-in-ue4ue5)
+- [Matt Gibson — Unreal Replication Settings](https://mattgibson.dev/blog/unreal-replication-settings)
+- [Kieran Newland — Replication Graph Tutorial](https://www.kierannewland.co.uk/replication-graph)
+- [ikrima.dev — Fast TArray Replication](https://ikrima.dev/ue4guide/networking/network-replication/fast-tarray-replication/)
+- [rick.me.uk — C++ Profiling in Unreal Engine 5](https://www.rick.me.uk/posts/2024/12/cpp-profiling-in-unreal-engine-5/)
+- [kantandev.com — UE4 Includes, PCH, and IWYU](http://kantandev.com/articles/ue4-includes-precompiled-headers-and-iwyu-include-what-you-use)
+- [unrealcommunity.wiki — Memory Management](https://unrealcommunity.wiki/memory-management-6rlf3v4i)
+- [unrealcommunity.wiki — Hot Reload and Live Coding](https://unrealcommunity.wiki/live-compiling-in-unreal-projects-tp14jcgs)
+- [unrealcommunity.wiki — Profiling with Unreal Insights](https://unrealcommunity.wiki/profiling-with-unreal-insights-ilad24y4)
+- [Simplygon — HLOD Builder for World Partition](https://www.simplygon.com/posts/54162a3d-390c-47f0-bb55-6fed2f626bd8)
+- [Robert Lewicki — Lambda Weak Pointer Captures](https://unreal.robertlewicki.games/p/daily-unreal-column-50-capture-weak)
+- [voithos.io — Fancier Ticking in Unreal](https://voithos.io/articles/fancier-ticking-in-unreal/)
+- [Tech-Artists.Org — Draw Call Optimization in UE5](https://www.tech-artists.org/t/draw-call-optimization-in-ue5/18217)
+- [Kokku Games — Blueprint Diff with Git](https://kokkugames.com/tutorial-stop-guessing-what-changed-in-your-blueprintsgit-blueprint-diff-inside-unreal-engine/)
+- [Rév O'Conner — Texture Compression and BCn](https://www.revoconner.com/post/texture-compression-for-unreal-engine-bcn-and-texture-packing)
+- [TechArtHub — Texture Streaming Pool](https://techarthub.com/fixing-texture-streaming-pool-over-budget-in-unreal/)
+- [Froyok — Render Target Performance Analysis](https://www.froyok.fr/blog/2020-06-render-target-performances/)
+- [KitBash3D — Level Instances and Packed Level Actors](https://help.kitbash3d.com/en/articles/12038349-a-quick-guide-packed-level-actors-level-instancing-in-unreal-engine-with-kitbash3d)
+- [Outscal — Timers vs Tick Guide](https://outscal.com/blog/unreal-engine-timers-vs-tick)
+- [CBgameDev — UE4/UE5 Optimising Tick Rate](https://www.cbgamedev.com/blog/quick-dev-tip-74-ue4-ue5-optimising-tick-rate)
+- [Brushify — RVT Bootcamp (YouTube)](https://www.youtube.com/watch?v=0-xXIMjlmqE)
+- [Epic Developer Community — Tasks System](https://dev.epicgames.com/documentation/unreal-engine/tasks-systems-in-unreal-engine)
+- [Georgy's Tech Blog — How to Use Mutex in UE](https://georgy.dev/posts/mutex/)
+- [Coconut Lizard — Strings and Other Things](https://www.coconutlizard.co.uk/blog/strings-and-other-things/)
+- [Daanmeysman ArtStation — Quad Overdraw and Triangles](https://daanmeysman.artstation.com/blog/7goy/keeping-your-games-optimized-part-1-triangles)
+- [MoreVFX Academy — Niagara Optimization Guide](https://morevfxacademy.com/complete-guide-to-niagara-vfx-optimization-in-unreal-engine/)
+- [Georgy Prosser — Optimizing TWeakObjectPtr](https://prosser.io/optimizing-tweakobjectptr-usage/)
+- [Intax Blueprint Performance Guide](https://intaxwashere.github.io/blueprint-performance/)
+
+### Official Documentation (dev.epicgames.com)
+
+- [Unreal Insights](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-insights-in-unreal-engine)
+- [Memory Insights](https://dev.epicgames.com/documentation/en-us/unreal-engine/memory-insights-in-unreal-engine)
+- [Networking Insights](https://dev.epicgames.com/documentation/en-us/unreal-engine/networking-insights-in-unreal-engine)
+- [Visibility and Occlusion Culling](https://dev.epicgames.com/documentation/unreal-engine/visibility-and-occlusion-culling-in-unreal-engine)
+- [Tasks System in Unreal Engine](https://dev.epicgames.com/documentation/unreal-engine/tasks-systems-in-unreal-engine)
+- [Developer Guide to Tracing](https://dev.epicgames.com/documentation/en-us/unreal-engine/developer-guide-to-tracing-in-unreal-engine)
+- [Getting Started with Editor Utility Blueprints](https://dev.epicgames.com/community/learning/tutorials/owYv/unreal-engine-getting-started-with-editor-utility-blueprints)
+
+### YouTube Channels
+
+- [Ben Cloward](https://www.youtube.com/@BenCloward) — materials, HLSL, shader development
+- [William Faucher](https://www.youtube.com/@WilliamFaucher) — Lumen, lighting, cinematic rendering
+- [Tom Looman](https://www.youtube.com/@TomLoomanton) — C++, AI, gameplay systems in UE5
+- [Alex Forsythe](https://www.youtube.com/@AlexForsythe) — Blueprint vs C++, architecture
+
+### Repositories and Community References
+
+- [Awesome Unreal (GitHub)](https://github.com/insthync/awesome-unreal) — curated list of UE resources
+- [unrealcommunity.wiki](https://unrealcommunity.wiki) — community-maintained wiki with deep dives
+- [Epic Developer Community](https://dev.epicgames.com/community/) — official tutorials and Knowledge Base
+- [r/unrealengine](https://www.reddit.com/r/unrealengine/) — community Q&A and real-world experience sharing
+
+### Epic Forums and Knowledge Base
+
+- [Epic Forums — GC Clustering Internals](https://forums.unrealengine.com/t/knowledge-base-garbage-collector-internals/501800)
+- [Epic Forums — Why Use TObjectPtr?](https://forums.unrealengine.com/t/why-should-i-replace-raw-pointers-with-tobjectptr/232781)
+- [Epic Forums — Blueprint Nativization Removed](https://forums.unrealengine.com/t/why-was-blueprint-nativization-removed-no-code-preaching/232490)
+- [Epic Forums — Nanite VRAM Fallback Thread](https://forums.unrealengine.com/t/nanite-fallback-mesh-buffers-vram-residence/2563974)
+- [Epic Forums — When to Use Level Instance/PLA/ISM/HISM](https://forums.unrealengine.com/t/when-to-use-level-instance-packed-level-actor-or-ism-hism-in-ue5/2681508)
+- [Epic Forums — Iris Bandwidth Control (UE5.5)](https://forums.unrealengine.com/t/how-is-server-to-client-bandwidth-controlled-in-iris-in-ue-5-5/2675046)
+- [Epic Forums — Shader Permutations Knowledge Base](https://forums.unrealengine.com/t/knowledge-base-understanding-shader-permutations/264928)
+- [Epic Forums — OFPA Best Practices](https://forums.unrealengine.com/t/tips-and-best-practices-for-one-file-per-actor/837886)
+- [Epic Forums — Lumen Surface Cache Scale](https://forums.unrealengine.com/t/lumen-surface-cache-scale-woes/2669365)
+
+---
+
+## Extended Reference: UE4 vs UE5 Feature Mapping
+
+### Render Feature Equivalence Table
+
+| UE4 Feature | UE5 Equivalent | Notes |
+|---|---|---|
+| Cascaded Shadow Maps (CSM) | Virtual Shadow Maps (VSM) | VSM is default in UE5; CSM still available |
+| Lightmass CPU/GPU | GPU Lightmass | GPU Lightmass is default in UE5 |
+| TAAA / TAA | TSR | TSR default in UE5; TAA still available |
+| Screen Space Reflections (SSR) | Lumen Reflections | Lumen is default; SSR fallback still available |
+| Screen Space AO (SSAO) | Lumen GI / Distance Field AO | SSAO still available; often disabled with Lumen |
+| Cascade Particles | Niagara | Cascade available but deprecated |
+| Hot Reload | Live Coding | Live Coding is default in UE5 |
+| World Composition | World Partition | WP is default for new open world projects |
+| Blueprint Nativization | C++ Blueprint Function Libraries | Nativization removed in UE5.0 |
+| Classic Tessellation | Nanite Tessellation (UE5.3+) | Classic removed in UE5.0 |
+| Sound Cues (primary) | MetaSounds (primary) | Sound Cues still work in UE5 |
+| Reflection Captures (only) | Lumen Reflections + Captures | Lumen handles dynamic; captures for static |
+| Replication Net Driver (legacy) | Iris (UE5.4+) | Iris opt-in, default-eligible in UE5.5+ |
+
+### Key UPROPERTY Changes UE4 → UE5
+
+| UE4 Pattern | UE5 Recommended Pattern | Notes |
+|---|---|---|
+| `T* MyPtr;` (raw with UPROPERTY) | `TObjectPtr<T> MyPtr;` | TObjectPtr required for incremental GC in 5.4+ |
+| `MarkPendingKill()` | `MarkAsGarbage()` | API renamed in UE5 |
+| `IsPendingKill()` | `IsGarbage()` / `!IsValid()` | API renamed in UE5 |
+| `GC.TimeBetweenPurgingPendingKillObjects` | Same, but with incremental GC option | UE5 adds incremental GC configuration |
+| `CreateDefaultSubobject` (same) | Same — but requires full restart on name changes | Unchanged; Live Coding unsafe for name changes |
+
+---
+
+Last revised: 2025. Guide version: 3.0 (Merged Edition). This is a living document — verify CVars and version notes against current engine source for your specific UE version. CVar defaults may differ between minor versions.
+
+---
+
+## Extended Reference: Profiling Patterns
+
+### Common Frame Spike Patterns and Solutions **[UE4 + UE5]**
+
+| Spike Type | Symptom in Insights | Likely Cause | Fix |
+|---|---|---|---|
+| GC hitch | `FGarbageCollection::Collect` spike every N seconds | Too many UObjects, no GC clusters | Enable clustering; reduce transient UObject creation |
+| Streaming hitch | `RequestAsyncLoad` stall in Game Thread | Synchronous asset load in hot path | Async loading; pre-warm content bundles |
+| Shader compile stall | First-time draw of a unique material | PSO cache miss | Pre-warm PSO cache from a capture playthrough |
+| Physics spike | `SyncComponentsToRBPhysics` wide bar | Overconstrained physics, too many substeps | Simplify collision; reduce substeps |
+| Render Thread spike | `Nanite::DrawPass::Rasterize` wide | Nanite overdraw from dense overlapping geometry | Reduce overlap; adjust MaxPixelsPerEdge |
+| Level streaming hitch | `UWorldPartition::RequestLoading` spike | Cell size too small; too many actors per cell | Increase Cell Size; use Runtime Cell Transformers |
+
+### TRACE_BOOKMARK Workflow for Automated Regression **[UE5.3+]**
+
+Trace bookmarks + Regions enable automated regression comparison across builds:
+
+```cpp
+// Mark gameplay events for later correlation:
+TRACE_BOOKMARK(TEXT("PlayerEnteredCombatZone"));
+TRACE_BOOKMARK(TEXT("BossSpawned::%s"), *BossName.ToString());
+
+// Tag a region for automated timer export:
+uint64 RegionId = TRACE_BEGIN_REGION_WITH_ID(TEXT("Wave3"));
+// ... wave 3 gameplay ...
+TRACE_END_REGION_WITH_ID(RegionId);
+```
+
+Automated CLI export after trace capture:
+```bash
+UnrealInsights.exe -AutoQuit -NoUI -OpenTraceFile="capture.utrace" \
+  -ExecOnAnalysisCompleteCmd="TimingInsights.ExportTimerStatistics results.csv -region=Wave3 -threads=GPU"
+```
+
+This enables build-over-build regression tracking in CI: capture a standard trace, export GPU timers for a known scenario, compare against a baseline CSV. Frame time budgets can silently erode week-over-week without automated detection.
+
+### Identifying the Frame Budget Breakdown **[UE4 + UE5]**
+
+The three threads run in parallel — the effective frame time is the maximum of all three, not the sum. A project with 7 ms Game Thread, 9 ms Render Thread, and 14 ms GPU is GPU-bound at 14 ms effective frame time. You cannot fix a GPU-bound scene by optimizing C++ code.
+
+**Profiling channel selection guide:**
 
 | Goal | Command-line / CVar |
 |---|---|
@@ -579,99 +1841,117 @@ Unreal Insights replaces the older Session Frontend. Choose trace channels befor
 | Full memory + asset metadata | `-trace=memory,metadata,assetmetadata` |
 | Named events (class/actor detail) | `-statnamedevents` (~20% overhead — targeted use only) |
 | Asset load timing | `loadtime,assetloadtime` |
+| Network analysis | `-NetTrace=1 -trace=net` |
 
-`Trace.RegionBegin` / `Trace.RegionEnd` (UE5.5+): tag custom multi-frame regions directly on the Insights timeline ([Tom Looman — UE 5.5 Performance Highlights](https://tomlooman.com/unreal-engine-5-5-performance-highlights/)).
-
-Memory snapshot: `Trace.SnapshotFile` captures a point-in-time snapshot during a live session. For the best asset breakdown, define `LLM_ALLOW_ASSETS_TAGS=1` in `.target.cs`. `Memreport -full` is still available, but Epic treats it as a legacy tool — Memory Insights is the actively developed path ([Epic Forums — Memreport visualization](https://forums.unrealengine.com/t/visualisation-tools-for-memreport-output/2587594)).
-
-Profiling macro comparison:
-
-| Macro | Visible in | Overhead | When to Use |
-|---|---|---|---|
-| `SCOPE_CYCLE_COUNTER(STAT_X)` | Stats System + Insights | Low | General CPU timing, always-on in non-shipping |
-| `TRACE_CPUPROFILER_EVENT_SCOPE_STR("X")` | Insights CPU track | Low | Fine-grained function scopes in Insights |
-| `SCOPED_NAMED_EVENT(Name, Color)` | Insights + Stats | Medium | Targeted investigations |
-| `TRACE_BOOKMARK(TEXT("X"))` | Insights timeline | Minimal | Frame markers, event timestamps |
+Memory snapshot: `Trace.SnapshotFile` captures a point-in-time snapshot during a live session. For the best asset breakdown, define `LLM_ALLOW_ASSETS_TAGS=1` in `.target.cs`.
 
 ---
 
-### Threading and Async (UE::Tasks, ParallelFor, FRunnable)
+## Extended Reference: Networking Deep Dive
 
-| System | Best For | Notes |
-|---|---|---|
-| `UE::Tasks` (UE5 new API) | Dependent task graphs, modern C++ | Cleaner API; same backend scheduler as TaskGraph |
-| `TaskGraph` (`FFunctionGraphTask`) | Legacy code, dependent graphs | Being replaced by `UE::Tasks` |
-| `AsyncTask` / `Async()` | Fire-and-forget background work | `EAsyncExecution::Thread` = dedicated OS thread |
-| `FRunnable` / `FRunnableThread` | Long-lived, persistent background threads | Higher overhead; prefer for continuous systems |
-| `ParallelFor` | Data-parallel loops | Uses the Task system; avoid TMap writes inside the body |
-
-Short `FRunnable` threads carry more overhead than queuing to the Task pool. `ParallelFor` loses its benefit if iterations contain contended writes — a TMap write inside a parallel body is almost always slower than sequential execution ([Epic Developer Docs — Tasks System](https://dev.epicgames.com/documentation/unreal-engine/tasks-systems-in-unreal-engine)).
-
-Golden rule for thread safety with UObjects: never read or write `UObject` properties from a worker thread without explicit guards. GC can run concurrently and invalidate objects.
+### Conditional Replication Patterns **[UE4 + UE5]**
 
 ```cpp
-// 1. FGCScopeGuard prevents GC during worker access:
+void AMyActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
-    FGCScopeGuard GCGuard;
-    MyUObject->DoReadOnlyThing();
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    
+    // Only replicate to the owning connection (private per-player data):
+    DOREPLIFETIME_CONDITION(AMyActor, PrivateInventory, COND_OwnerOnly);
+    
+    // Skip replication to the owner (they already know this from input):
+    DOREPLIFETIME_CONDITION(AMyActor, ServerSimulatedPosition, COND_SkipOwner);
+    
+    // Only replicate once after spawn (immutable setup data):
+    DOREPLIFETIME_CONDITION(AMyActor, CharacterClass, COND_InitialOnly);
+    
+    // Push model (only replicate when marked dirty):
+    FDoRepLifetimeParams PushParams;
+    PushParams.bIsPushBased = true;
+    DOREPLIFETIME_WITH_PARAMS_FAST(AMyActor, Health, PushParams);
 }
-
-// 2. TStrongObjectPtr for thread-safe pinning of UObject lifetime (UE5.5+: lighter):
-TStrongObjectPtr<UMyObject> PinnedObject(MyObject);
-AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [PinnedObject]() {
-    PinnedObject->DoWork();
-});
-
-// 3. Marshal results back to the GameThread:
-AsyncTask(ENamedThreads::GameThread, [Result]() {
-    // Apply results to UObjects here
-});
 ```
 
-Use `FCriticalSection` + `FScopeLock` (not `std::mutex` — it may use MSVC/Clang debug checks that conflict with UE memory tracking). Use `FRWLock` when reads significantly outnumber writes ([Georgy's Tech Blog — How to use mutex](https://georgy.dev/posts/mutex/)).
+`COND_OwnerOnly` is the single most impactful replication condition for private per-player state (inventory, ability cooldowns, local UI state). Without it, private data replicates to all clients — a bandwidth waste and a security concern in competitive games.
+
+### Replication Graph Spatial Grid Setup **[UE4.20+ / UE5]**
+
+For large player counts (50+), the Replication Graph plugin replaces the default Net Driver's per-actor relevancy O(n) check with spatial grids:
+
+```cpp
+// In your ReplicationGraph subclass:
+UReplicationGraphNode_GridSpatialization2D* GridNode = CreateNewNode<UReplicationGraphNode_GridSpatialization2D>();
+GridNode->CellSize = 10000.0f;    // 100m spatial cells
+GridNode->SpatialBias = FVector2D(-500000.0f, -500000.0f);  // world offset
+AddGlobalGraphNode(GridNode);
+```
+
+Actors in spatial cells outside a client's view cone stop replicating automatically. For Fortnite-scale projects this is essential; for 8-player co-op it is overkill.
+
+### Server-Side Move Validation **[UE4 + UE5]**
+
+For physics-based movement with `CharacterMovementComponent`, the server always re-simulates the move from the client's inputs. Do not disable this. However, the tolerance thresholds for position reconciliation (`MaxClientSmoothingDeltaTime`, `NetworkMaxSmoothUpdateDistance`) control when the server forces a correction. Tune these per-game: a tight platformer needs strict correction; an exploration game may tolerate larger position divergence.
 
 ---
 
-### Memory and GC (TObjectPtr, TWeakObjectPtr, Clusters)
+## Extended Reference: Build, Cook, and Iteration
 
-#### TObjectPtr — UE5 Replacement for Raw Pointers
+### Derived Data Cache (DDC) Strategy **[UE4 + UE5]**
 
-`TObjectPtr<T>` is the UE5 replacement for raw `T*` in `UPROPERTY` class members. In shipping builds it compiles down to a raw pointer with zero overhead. In editor builds it adds access tracking, lazy-load support, and better diagnostics ([UE Forums — Why use TObjectPtr?](https://forums.unrealengine.com/t/why-should-i-replace-raw-pointers-with-tobjectptr/232781)).
+The DDC stores compiled shaders, cooked assets, and derived data keyed by source asset hash + build settings. Cold DDC on a fresh checkout forces full shader recompilation, which can take many hours.
 
-```cpp
-UPROPERTY(EditAnywhere)
-TObjectPtr<UMeshComponent> MeshComponent;
+CI/CD best practices:
+- Run a nightly full cook on a build server and push results to a shared DDC (`SharedDDCPath` in `Engine.ini`).
+- Developer machines pull from shared DDC, only recompiling assets they have changed.
+- Epic's `Zen Store` (UE5.4+) replaces the legacy shared DDC with a content-addressable, version-tolerant cache server with REST API. Recommended for teams larger than 5 developers.
 
-// Enforce project-wide in YourGameEditor.Target.cs:
-NativePointerMemberBehaviorOverride = PointerMemberBehavior.Disallow;
+```ini
+; DefaultEngine.ini (developer workstation):
+[DerivedDataBackend]
+Root=(Type=KeyLength, Length=120, Inner=AsyncPut)
+AsyncPut=(Type=AsyncPut, Inner=Hierarchy)
+Hierarchy=(Type=Hierarchical, Inner=Boot, Inner=Shared, Inner=Local)
+Local=(Type=FileSystem, ReadOnly=false, Clean=false, Flush=false, PurgeTransient=true, DeleteUnused=true, UnusedFileAge=34, FoldersToClean=-1, Path=%ENGINEVERSIONAGNOSTICUSERDIR%DerivedDataCache)
+Shared=(Type=FileSystem, ReadOnly=false, Clean=false, Flush=false, DeleteUnused=true, UnusedFileAge=10, FoldersToClean=10, Path=\\BuildServer\DDC, EnvPathOverride=UE-SharedDataCachePath)
+Boot=(Type=Boot, Path=%GAMEINIDIR%Boot.ddc, MaxCacheSize=128)
 ```
 
-Critical in UE5.4: incremental GC requires that all `UPROPERTY` members use `TObjectPtr` — raw pointers can cause premature collection.
+### Live Coding Safe Practices **[UE4.22+ / UE5 default]**
 
-#### TWeakObjectPtr — Hot-Path Optimization
+Live Coding (`Ctrl+Alt+F11` by default) hot-patches function bodies in the running editor. Safe for:
+- Logic changes inside `.cpp` function bodies
+- Adding new local variables within functions
+- Changing constants and literals
 
-`TWeakObjectPtr::Get()` and `IsValid()` have nearly identical implementations — both index into `GUObjectArray` (likely a cache miss). Hot-path pitfalls:
+Unsafe (requires full editor restart):
+- Adding/removing `UPROPERTY` or `UFUNCTION` declarations
+- Changing struct layouts (replicated or not)
+- Adding/removing virtual functions or virtual overrides
+- Changing `CreateDefaultSubobject` names
+- Modifying `GENERATED_BODY()` or `GENERATED_UCLASS_BODY()` macros
 
-```cpp
-// BAD: checks validity 3 times (IsValid + Get + null check)
-if (WeakPtr.IsValid()) { UObject* Obj = WeakPtr.Get(); if (IsValid(Obj)) ... }
-
-// GOOD: single dereference with null check
-if (UObject* Obj = WeakPtr.Get()) { Obj->Foo(); Obj->Bar(); }
-
-// BAD in loops: constructs TWeakObjectPtr on every iteration via operator==
-for (auto& W : WeakPtrArray) { if (W == SomeObject) ... }
-
-// GOOD: pre-construct outside, use HasSameIndexAndSerialNumber
-TWeakObjectPtr<UObject> SearchFor(SomeObject);
-for (auto& W : WeakPtrArray) { if (W.HasSameIndexAndSerialNumber(SearchFor)) ... }
+**[Deprecated in UE5]**: Hot Reload (the legacy `Ctrl+Alt+F11` mechanism in UE4) was replaced by Live Coding as the default in UE4.22. Enable reinstancing in `DefaultEngine.ini` to reduce Blueprint corruption risk during Live Coding of classes derived from Blueprints:
+```ini
+[/Script/LiveCoding]
+bInstallInEngineFolder=false
 ```
 
-Source: [George Prosser — Optimizing TWeakObjectPtr Usage](https://prosser.io/optimizing-tweakobjectptr-usage/)
+### Module Organization for Large Projects **[UE4 + UE5]**
 
-#### GC Clusters
+- Keep `Public/` headers minimal and stable; put implementation in `Private/`.
+- `PublicDependencyModuleNames` transitively exposes headers to dependents. Use `PrivateDependencyModuleNames` for everything not in your public API.
+- `PrivateIncludePaths` prevents internal headers from leaking transitively.
+- Prefer a plugin over a module when the code ships as optional or has its own versioning lifecycle.
+- Target a clean build time under 3 minutes for your most-changed module — if it exceeds this, split it further.
+- Setting `bFasterWithoutUnity = true` in a specific module's `Build.cs` disables unity batching only for that module — useful for modules in constant flux without penalizing the entire build.
 
-GC clusters reduce the marking phase cost by grouping objects with the same lifetime. Once grouped, GC traverses the cluster root rather than each member individually. Enabling `gc.AssetClusteringEnabled 1` and Blueprint clustering in Project Settings > Engine > Garbage Collection saves 50%+ of marking time for clustered objects ([UE Forums — GC Internals](https://forums.unrealengine.com/t/knowledge-base-garbage-collector-internals/501800)).
+---
+
+## Extended Reference: GC, Memory, and Container Patterns
+
+### GC Clusters **[UE4 + UE5]**
+
+GC clusters reduce the marking phase cost by grouping objects with the same lifetime. Once grouped, GC traverses the cluster root rather than each member individually. Enabling `gc.AssetClusteringEnabled 1` and Blueprint clustering in Project Settings > Engine > Garbage Collection saves 50%+ of marking time for clustered objects.
 
 ```cpp
 void UMyDataAsset::PostLoad()
@@ -681,13 +1961,7 @@ void UMyDataAsset::PostLoad()
 }
 ```
 
-Keep the live UObject count below ~200k as a good general practice.
-
----
-
-### UObject Pitfalls (NewObject, CDO, Live Coding)
-
-#### NewObject and Choosing an Outer
+### UObject Allocation Patterns **[UE4 + UE5]**
 
 ```cpp
 // Always provide the correct Outer — it controls lifetime and GC visibility:
@@ -702,29 +1976,11 @@ MyComponent = NewObject<UStaticMeshComponent>(this, TEXT("MeshComp"));
 MyComponent->RegisterComponent();
 ```
 
-#### CDO Traps and Blueprint Inheritance
-
-The Class Default Object (CDO) is created once per class at engine startup. The constructor runs only for the CDO — every subsequent instance is a copy of the CDO. This means:
-
+The Class Default Object (CDO) is created once per class at engine startup. The constructor runs only for the CDO — every subsequent instance is a copy. This means:
 - Never put runtime logic in constructors (map lookups, asset loads, actor queries).
 - Renaming a `CreateDefaultSubobject` component between hot reloads corrupts Blueprint assets derived from that class.
-- Adding or removing `UPROPERTY` members requires a full editor restart — Live Coding handles this incorrectly and can cause Blueprint corruption or crash-on-open ([unrealcommunity.wiki — Hot Reload and Live Coding](https://unrealcommunity.wiki/live-compiling-in-unreal-projects-tp14jcgs)).
 
-#### Live Coding — What Is Actually Safe
-
-Live Coding is safe ONLY for changes inside function bodies (`.cpp` files, non-UPROPERTY logic). Operations that require a full editor restart:
-
-- Adding or removing `UPROPERTY` or `UFUNCTION` declarations
-- Changing `UPROPERTY` types or names
-- Adding or removing virtual functions
-- Changing struct layouts in replicated structs
-- Modifying `CreateDefaultSubobject` names
-
----
-
-### Containers (TArray, TInlineAllocator, FName, FStringView)
-
-#### TArray — Performance Patterns
+### Container Performance Patterns **[UE4 + UE5]**
 
 ```cpp
 // Pre-allocate before bulk inserts:
@@ -747,17 +2003,9 @@ TArray<FVector, TInlineAllocator<8>> LocalPoints;
 void ProcessPoints(TArrayView<FVector> Points);
 ```
 
-#### FName vs FString vs FText
-
-| Type | Storage | Comparison | When to Use |
-|---|---|---|---|
-| `FString` | Heap-allocated `TArray<TCHAR>` | O(n) | Dynamic text construction, I/O |
-| `FName` | Global name table index | O(1) integer | Asset names, identifiers, map keys |
-| `FText` | Immutable + localization metadata | O(?) | User-facing UI strings, localization |
-
-Two `FName` pitfalls:
-- The name table is NEVER GC'd — every unique string added at runtime grows it forever. With procedurally generated names in long sessions, the table can consume significant memory ([Reddit — C++ FName, FString, FText](https://www.reddit.com/r/unrealengine/comments/wqox8w/c_fname_fstring_ftext_when_to_use_each_of_these/)).
-- Constructing an `FName` from a string literal in a hot path is unexpectedly expensive — it acquires a thread lock and searches the name table:
+FName pitfalls:
+- The name table is NEVER GC'd — every unique string added at runtime grows it forever. With procedurally generated names in long sessions, the table can consume significant memory.
+- Constructing an `FName` from a string literal in a hot path is expensive — it acquires a thread lock and searches the name table.
 
 ```cpp
 // BAD: constructs FName from string on every call:
@@ -772,519 +2020,311 @@ void MyFunc() {
 
 `FStringView` (UE5): a non-owning view over an existing string buffer. Use it as the parameter type in functions to prevent implicit `FString` copies.
 
----
-
-### Networking (Push Model, Iris, FFastArraySerializer)
-
-#### Push Model Replication
-
-Legacy replication polls all properties every frame. The push model skips the poll — properties only replicate when you explicitly mark them dirty:
-
-```cpp
-// GetLifetimeReplicatedProps:
-FDoRepLifetimeParams Params;
-Params.bIsPushBased = true;
-DOREPLIFETIME_WITH_PARAMS_FAST(AMyActor, Health, Params);
-
-// Setter — MARK_PROPERTY_DIRTY on every change:
-void AMyActor::SetHealth(float NewHealth)
-{
-    Health = NewHealth;
-    MARK_PROPERTY_DIRTY_FROM_NAME(AMyActor, Health, this);
-}
-```
-
-Add `NetCore` to your module's dependencies or you will get a linker error on `UEPushModelPrivate::MarkPropertyDirty`.
-
-#### FFastArraySerializer for Large Arrays
-
-Standard TArray replication sends the entire array on every change. `FFastArraySerializer` tracks per-element dirty keys and sends only deltas ([ikrima.dev — Fast TArray Replication](https://ikrima.dev/ue4guide/networking/network-replication/fast-tarray-replication/)).
-
-Pattern: the Item struct inherits `FFastArraySerializerItem` → the List struct inherits `FFastArraySerializer` → mark dirty via `MarkItemDirty(Items[Idx])`.
-
-#### Iris (UE5.4+, Default from 5.5+)
-
-Iris is a rewrite of the replication data layer. It separates gameplay from networking by building replication state descriptors per class instead of polling raw UObject property memory. Existing UPROPERTY replication, RepNotify, and RPCs work unchanged.
-
-```ini
-; DefaultEngine.ini:
-net.Iris.UseIrisReplication=1
-```
+| Type | Storage | Comparison | When to Use |
+|---|---|---|---|
+| `FString` | Heap-allocated `TArray<TCHAR>` | O(n) | Dynamic text construction, I/O |
+| `FName` | Global name table index | O(1) integer | Asset names, identifiers, map keys |
+| `FText` | Immutable + localization metadata | O(?) | User-facing UI strings, localization |
 
 ---
 
-### Compile Speed (IWYU, Unity Build)
+## Extended Reference: Materials and Shaders — Advanced Patterns
 
-IWYU (Include What You Use) — every `.cpp` includes only what it actually uses:
+### Dynamic Switch vs Static Switch — A Critical Distinction **[UE4 + UE5]**
 
-```csharp
-// In the module Build.cs:
-PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-```
+The `Switch Parameter` node (dynamic) and `Static Switch Parameter` node behave fundamentally differently at the GPU level:
 
-Avoid `#include "Engine.h"` and `#include "UnrealEd.h"` — these monolithic headers pull in tens of thousands of lines and destroy PCH efficiency ([kantandev.com — UE4 Includes, PCH, and IWYU](http://kantandev.com/articles/ue4-includes-precompiled-headers-and-iwyu-include-what-you-use)).
+- **Static Switch**: The dead branch is eliminated by the shader compiler. Zero runtime cost for the discarded path. But generates additional shader permutations (one per unique combination of static switch values in instances). Two switches = 4 permutations; eight switches = 256 permutations.
+- **Dynamic Switch**: Both branches are compiled into the shader. Both branches consume instruction budget even when not taken. On AMD GPUs, hitting a context roll from mismatched PSO states with many dynamic switches can cause stalls.
 
-Setting `bFasterWithoutUnity = true` in a specific module's `Build.cs` disables unity batching only for that module — useful for modules in constant flux without penalizing the entire build.
+Rule: use Static Switches for quality tier variations, two-sided vs. one-sided, and opaque vs. masked mode changes. Use dynamic switches only when the change happens at runtime per-instance (e.g., an actor going wet vs. dry). From [community testing](https://www.reddit.com/r/unrealengine/comments/1hvldzb/so_i_was_always_told_that_switch_params_on/), the Shader Complexity view clearly shows dynamic switch branches burning instructions even when disabled.
 
-Module organization: split a large codebase into many small modules = greater build parallelism and smaller cascading recompiles. A change in a leaf module does not rebuild parents if the public interface is unchanged.
+A `Switch Parameter` (dynamic) does NOT eliminate branches — both sides are compiled and evaluated. In Shader Complexity view you can clearly see that a disabled dynamic switch branch still burns instructions. Rule: keep static switches below ~5 per master material. Use Material Layering or Material Functions to break up complexity instead of cramming everything into one monolithic graph.
 
----
+### Custom HLSL Node Reference **[UE4 + UE5]**
 
-### Common Mistakes and Lesser-Known Tricks
+The `Custom` node allows raw HLSL inline — essential for packed texture decoding, raymarching, complex math, and reducing node-graph spaghetti ([Ben Cloward's HLSL tutorial](https://www.youtube.com/watch?v=qaNPY4alhQs)).
 
-**Dangerous dangling delegates and lambda captures:**
-```cpp
-// DANGEROUS: if 'this' is GC'd before the timer fires, crash:
-GetWorldTimerManager().SetTimer(Handle, [this]() { DoThing(); }, 1.f, false);
+Complete pitfall list:
+- **No preview**: the Custom node renders black in Material Editor thumbnail. Test by applying to a mesh in the viewport.
+- **TEXCOORD overflow**: limit of 8 UV interpolators (16 in UE5 with additional cost). Use the `Customized UVs` panel to pre-pack data into UV slots.
+- **Texture sampling syntax**: use `Texture2DSample(Tex, TexSampler, UV)` where the sampler is a separate input pin (TextureObject input). Cannot use `tex2D()` directly in SM5 pixel shaders.
+- **Loop unrolling**: the HLSL compiler aggressively unrolls loops. Add `[loop]` for dynamic loop counts that must not be unrolled.
+- **Helper functions**: can be wrapped in a struct declaration or included via `#include "/Engine/Private/Common.ush"`.
+- **View uniforms**: Custom nodes can read `View.ViewToClip`, `View.WorldToView`, and other view-uniform data. Document what uniforms you reference so future artists know the dependency.
 
-// SAFE — AddWeakLambda:
-SomeDelegate.AddWeakLambda(this, [this]() { DoThing(); });
-
-// SAFE — explicit weak pointer:
-auto WeakThis = MakeWeakObjectPtr(this);
-GetWorldTimerManager().SetTimer(Handle, [WeakThis]() {
-    if (WeakThis.IsValid()) WeakThis->DoThing();
-}, 1.f, false);
-```
-
-**`!= nullptr` vs `IsValid()`:** these are not equivalent for `UObject*`. A destroyed (BeginDestroy) actor will pass `!= nullptr` but will not pass `IsValid()`.
-
-**Never use `std::shared_ptr<UObject>`:** GC has no knowledge of `std::shared_ptr` ref counts — it can collect and destroy an object while the `shared_ptr` still holds ref-count = 1, leading to a double-free ([unrealcommunity.wiki — Memory Management](https://unrealcommunity.wiki/memory-management-6rlf3v4i)).
-
-**`FAutoConsoleVariableRef` — live tuning without recompilation:**
-```cpp
-namespace MySystem
-{
-    static float CollisionRadius = 120.f;
-    static FAutoConsoleVariableRef CVar_CollisionRadius(
-        TEXT("my.CollisionRadius"),
-        CollisionRadius,
-        TEXT("Radius used by proximity check system"),
-        ECVF_Scalability
-    );
-}
-```
-
-Any change to `my.CollisionRadius` in the console or `.ini` is immediately reflected in `CollisionRadius`. For thread-safe reads from worker threads, use `ECVF_RenderThreadSafe`.
-
-**`WITH_EDITOR` vs `WITH_EDITORONLY_DATA`:**
-- `WITH_EDITOR` — editor + EditorOnly builds; for editor-only code.
-- `WITH_EDITORONLY_DATA` — all desktop platforms (even non-editor); for editor-only data fields in `UCLASS`/`USTRUCT`.
-
-Prefer `WITH_EDITORONLY_DATA` for data fields to avoid binary bloat in shipping.
-
-**GameplayDebugger Module:** overlay runtime debug information in-game without polluting shipping code. Activated via numpad `'`. Gate an entire category class with `#if WITH_GAMEPLAY_DEBUGGER` — it is stripped in shipping ([UE Forums — How to use Gameplay Debugger](https://forums.unrealengine.com/t/how-to-use-gameplay-debugger/13902)).
-
----
-
-## Part 4: Tech Art
-
-### Materials — Permutation Explosion and How to Stop It
-
-Material Instances (MIC) allow changing scalar, vector, and texture parameters without recompiling shaders. In Nanite's deferred shading bin system, every unique shader (not every unique mesh) requires its own shading bin before rasterization. Minimizing unique shaders matters far more than geometry count in a Nanite scene ([Tech-Artists.Org draw call deep dive](https://www.tech-artists.org/t/draw-call-optimization-in-ue5/18217)).
-
-#### Permutation Explosion
-
-Every Static Switch Parameter in a master material doubles the number of compiled shader permutations. With N static switches you have up to 2^N permutations on disk — this balloons cook time, memory, and PSO loading stalls. Epic's Knowledge Base on shader permutations states it directly: every combination of settings and switches is a separate shader from the GPU's perspective ([Epic's Knowledge Base](https://forums.unrealengine.com/t/knowledge-base-understanding-shader-permutations/264928)).
-
-Key pitfall: a `Switch Parameter` (dynamic, not static) does NOT eliminate branches — both sides are compiled and evaluated. In Shader Complexity view you can clearly see that a disabled dynamic switch branch still burns instructions.
-
-Rule: keep static switches below ~5 per master material. Use Material Layering or Material Functions to break up complexity instead of cramming everything into one monolithic graph.
-
-`Material Quality Switch` routes execution through Low/Medium/High/Epic branches, controlled by `r.MaterialQualityLevel 0/1/2/3`. Use it to strip expensive features (normal map blending, distance-based roughness variation) on lower settings without maintaining separate materials.
-
----
-
-### Custom HLSL and Custom Node Pitfalls
-
-The Custom node lets you write raw HLSL inline — essential for packed texture decode, raymarching, complex math, and reducing spaghetti ([Ben Cloward's HLSL tutorial](https://www.youtube.com/watch?v=qaNPY4alhQs)).
-
-Pitfalls:
-- No material preview in the thumbnail — the graph must be applied to a mesh for testing.
-- TEXCOORD overflow: limit of 8 UV interpolators (16 in UE5 with additional cost). Use the `Customized UVs` panel to pre-pack data into UV slots.
-- Texture sampling syntax: `Texture2DSample(Tex, TexSampler, UV)` where the sampler is a separate input pin (TextureObject input). You cannot call `tex2D()` directly in SM5 pixel shaders.
-- Unreal's HLSL compiler can aggressively unroll loops; dynamic iteration counts may not compile. Use the `[loop]` attribute if needed.
-- Helper functions can be wrapped in a struct declaration or included via `#include "/Engine/Private/Common.ush"`.
-
----
-
-### WPO and Pixel Depth Offset
-
-#### World Position Offset (WPO) + Nanite
+### WPO Performance — Complete Guide **[UE5 only]**
 
 WPO was unsupported in early Nanite (UE5.0). Available from UE5.1, with significant improvements in UE5.4 where per-cluster WPO range culling was added.
 
-Key setting: `Max World Position Offset Displacement` in the material. Nanite uses this to cull clusters that cannot be affected. Setting it too high disables culling; setting it to 0 disables WPO entirely for that material. This is the single most impactful WPO knob in production ([community optimization notes](https://www.reddit.com/r/UnrealEngine5/comments/1oqon6r/how_to_optimize_this_scene_more/)).
+Key setting: `Max World Position Offset Displacement` in the material. Nanite uses this value to cull clusters that cannot be affected by WPO. Setting it too high disables culling; setting it to 0 disables WPO entirely for that material. This is the single most impactful WPO knob in production.
 
-CVars for the WPO shadow cache:
-```
-r.Shadow.Virtual.Cache.MaxMaterialPositionInvalidationRange 10
-r.Shadow.Virtual.NonNanite.IncludeInCoarsePages 0
-```
-The first limits the radius within which WPO movement invalidates VSM shadow cache pages — the main source of WPO performance regression on dense foliage.
+Velocity buffer: materials with WPO must write per-vertex velocity for correct TSR/motion blur. Enable `Output Velocity` in the material properties (enabled by default for WPO materials).
 
-Velocity buffer: materials with WPO must write per-vertex velocity for correct TSR/motion blur. Enable `Output Velocity` in the material properties (enabled by default for WPO).
+PDO + Lumen ghosting: when PDO is active and Lumen's temporal GI is accumulating, displaced pixels cause smearing during camera movement. Mitigation: keep PDO displacement short-range, or disable Lumen screen traces for PDO-heavy surfaces.
 
-#### Pixel Depth Offset (PDO)
+### Runtime Virtual Texture (RVT) — Complete Setup **[UE4.23+ / UE5]**
 
-PDO shifts pixel depth values inward, creating the illusion of surface displacement without real geometry. Problem: PDO modifies pixel positions in the G-Buffer, but does not run during the shadow depth pass. The shadow geometry stays on the original mesh surface, causing severe self-shadowing artifacts ([community thread on PDO shadow issues](https://forums.unrealengine.com/t/pixel-depth-offset-self-shadowing-issue/154799)).
+RVT is a render target that the landscape writes into every frame, and objects sample from for context-sensitive shading. Primary use cases: landscape blending at object bases, footprint/decal stamping, terrain-conforming roads.
 
-Lumen ghosting: when PDO is active and Lumen's temporal GI is accumulating, displaced pixels cause smearing during camera movement.
+Setup checklist:
+1. Create a `Runtime Virtual Texture` asset.
+2. Place a `Runtime Virtual Texture Volume` over the landscape.
+3. Assign the RVT asset to the volume; set bounds from the landscape.
+4. Add the RVT to the landscape's Virtual Textures array.
+5. Modify the landscape material: add `Runtime Virtual Texture Output` node.
+6. Modify prop materials: add `Runtime Virtual Texture Sample` node.
 
-Requirements: PDO forces materials off the Nanite fast path onto programmable rasterization, increasing rasterization overhead. Nanite Tessellation (UE5.3+) runs during shadow passes — it is a better alternative for cases that need displacement with correct shadows.
-
----
-
-### Translucency
-
-Translucent materials must render every overlapping layer. Stacking 5 translucent spheres produces deep red in Shader Complexity; 5 masked spheres stay green. Every translucent pixel samples the scene color behind it regardless of actual opacity.
-
-Translucency lighting modes:
-- `Volumetric Non-Directional` — cheapest, flat lighting
-- `Surface Translucency Volume` — reads from the light propagation volume
-- `Surface Forward Shading` — full PBR lighting, most expensive; required for correct specular on glass
-
-Key optimization: use `Blend Mode: Masked` when the material only needs binary opacity. Masked runs a depth pre-pass and shades only surviving quads once. Translucent skips the depth pre-pass and shades every pixel every time.
-
-Refraction forces a scene color capture (read-before-write) — very expensive. For distant or secondary materials, consider fake refraction via normal-mapped distortion without the full refraction pass.
-
-Sorting: translucent objects are sorted back-to-front every frame — CPU cost scales with the number of translucent actors.
+VT thrashing signs: visible resolution flickering, red pool graph (`r.VT.Residency.Show`). Causes: undersized pool, negative mip bias on VT Sample nodes, zero-gradient UV sampling (requests mip 0 for entire surface). Monitor with `r.VT.Residency.Show 1` — if the green (mip bias applied) value is non-zero, the engine is degrading texture resolution.
 
 ---
 
-### Virtual Textures (SVT, RVT)
+## Extended Reference: Niagara VFX — Advanced Patterns
 
-Streaming Virtual Textures (SVT) replace traditional texture streaming for large textures. Only the tiles visible at the current mip are resident in GPU memory.
+### Niagara Scalability and Effect Types **[UE4.20+ / UE5]**
 
-Runtime Virtual Textures (RVT) are render targets that the landscape (or other objects) writes to every frame, while other objects read from them for blending. Primary uses: landscape blending (rocks/trees adopting the terrain's color/normal/roughness), decal stamping (footprints, mud), terrain-conforming roads.
+The `Niagara Effect Type` asset is the global control center for scalability: cull distances, max instances, spawn count scales, and budget limits. Every Niagara system should have an Effect Type assigned.
 
-Enabling RVT on a complex landscape can reduce landscape overdraw from orange/red in Shader Complexity to full green by caching expensive material evaluation ([Brushify RVT Bootcamp](https://www.youtube.com/watch?v=0-xXIMjlmqE)).
+Per-system scalability settings to configure per quality level:
 
-VT Pool Size tuning:
-```
-r.VT.PoolSizeScale 1.0       ; scale multiplier for all fixed pool sizes
-r.VT.Residency.Show 1        ; on-screen HUD showing pool occupancy per format
-r.VT.Residency.Notify 1      ; notification when the pool hits 100%
-r.VT.DumpPoolUsage            ; dump page counts per texture asset
-```
+| Setting | Purpose |
+|---|---|
+| `Spawn Count Scale` | Reduce particle count at lower quality |
+| `Cull Distance` | Hard kill beyond world-space distance |
+| `Max Instances` | Cap on concurrent system instances |
+| `Update Frequency` | Reduce tick rate for background effects |
 
-When VT thrashes: negative mip bias, zero-gradient sampling (UVs invariant to screen-space derivatives = hardware requests mip 0 tiles for the entire surface). Monitor with `r.VT.Residency.Show 1` — if the green (mip bias applied) value is non-zero, the engine is degrading texture resolution.
+The Significance Handler within the Effect Type determines which systems survive budget pressure: `Distance` (closest wins), `Age` (newest wins), `Custom`. For bullet impacts with max 100 instances, Distance ensures only the nearest impacts render.
 
----
+### Niagara Data Channels (NDC) — Deep Dive **[UE5.3+]**
 
-### Niagara — GPU vs CPU, Data Channels, Significance Manager
+NDC allows different Niagara systems to communicate asynchronously — one system writes data, another reads it in the same frame. It replaces the older event system for cross-emitter spawning patterns and global VFX state.
 
-#### GPU vs CPU Sim Thresholds
+Architecture: NDC data is completely transient — it exists for a single tick. If you miss a frame, the data is gone. Use for:
+- Bullet impacts spawning multiple effect types from one location
+- Rain writing wetness data read by puddle splashes
+- Global wind direction affecting all outdoor particle systems without Blueprint overhead
+- Crowd systems publishing density data read by ground-disturbance effects
 
-CPU sims: good for < ~1000 particles, access to BP/C++ data, full event callbacks, collisions with the physics system.
-GPU sims: > ~1000 particles, offload work to the GPU compute pipeline at low CPU cost. The GPU dispatch overhead means they only pay off above ~1000 particles.
+Key limitation: NDC cannot be used to pass persistent state between frames. For persistent shared state, use a Render Target, a Texture2D written per frame, or a C++ Data Asset.
 
-"GPU emitters are only great if you're spawning a lot of particles (more than 1000). For 1–100 particles use a CPU emitter" ([practical Niagara optimization guides](https://morevfxacademy.com/complete-guide-to-niagara-vfx-optimization-in-unreal-engine/)).
+### GPU Simulation — Fixed Bounds and Distance Fields **[UE4 + UE5]**
 
-From UE5.3+: GPU readback is possible — GPU particles can export data back to CPU/Blueprint at a cost. Always profile with `stat Niagara`.
+GPU simulations require fixed bounds. Without fixed bounds, the GPU does not dispatch the compute shader when the system's bounding box is off-screen — the effect disappears silently as the camera rotates. Use `Fix Bounds` in Niagara Editor after tuning the effect. For traveling effects (projectile trails), expand bounds generously.
 
-#### Niagara Data Channels (UE5.3+)
+GPU particle Distance Field collision uses the Global Distance Field — a coarse, scene-wide approximation with an effective range of ~10,000 units from the camera. Beyond that range, collisions become unreliable. `Particle Radius Scale` default 0.1 is often too small for reliable collision detection; increase to 1.0–5.0 for visible effects.
 
-NDC allows different Niagara systems to communicate asynchronously — one system writes data, another reads it in the same frame. It replaces the older event system for cross-emitter spawning patterns and global VFX state (e.g. a wind system publishing direction data read by all particle emitters).
-
-Key limitation: NDC data is completely transient — it exists for a single tick. If you miss a frame, the data is gone ([Epic forum NDC discussion](https://forums.unrealengine.com/t/niagara-data-channel-niagara-emitters-not-taking-the-set-spawn-count/2599289)).
-
-#### Significance Manager
-
-The Significance Handler in the Effect Type determines which systems survive when the budget is exceeded. Built-in modes: `Distance` (closest to camera wins), `Age` (newest wins), `Custom` (Blueprint/C++).
-
-Crash bug warning: with aggressive culling and short-lived systems dying simultaneously during significance processing, a crash can occur — fix details in [Epic's forum post on Niagara scalability crash](https://forums.unrealengine.com/t/niagara-scalability-crash-when-processing-significance/2611550).
-
-#### Bounds for GPU Sims
-
-GPU sims require fixed bounds — if the fixed bounds are off-screen, the GPU does not dispatch the compute shader and the effect disappears entirely. For travelling effects (projectile trails), expand bounds generously. Diagnostic: if a GPU effect disappears when rotating the camera, the bounds are too small.
-
-#### GPU Compute Particles + Distance Fields
-
-GPU particle collision uses the Global Distance Field — a coarse, scene-wide approximation with an effective range of ~10,000 units from the camera. Beyond that range, collisions become unreliable ([Niagara GPU distance field collision video](https://www.youtube.com/watch?v=-jf97_EIdHI)).
-
-Particle Radius Scale: the default 0.1 is often too small for reliable collision detection. Increase to 1.0–5.0 for visible effects.
+GPU readback (UE5.3+): GPU particles can export data back to CPU/Blueprint at a measurable cost. Always profile with `stat Niagara` before relying on GPU readback in production.
 
 ---
 
-### Post-Process and Upscaling (TSR/DLSS/FSR)
+## Extended Reference: Audio Advanced Patterns
 
-Post-process effect costs:
+### Sound Concurrency Deep Dive **[UE4 + UE5]**
 
-| Effect | Approximate Cost | Notes |
-|---|---|---|
-| Bloom (Quality 6) | ~1–2 ms | Quality 0–2 significantly cheaper; 4+ uses convolution |
-| Depth of Field (Cinematic) | ~2–4 ms | Gaussian DoF significantly cheaper |
-| Motion Blur (Quality 4) | ~0.5–1 ms | Adds velocity buffer read + reconstruction pass |
-| Chromatic Aberration | ~0.1 ms | Minor |
-| Vignette | Negligible | |
+Sound Concurrency assets define how the engine handles budget overruns for a sound category.
+
+| Parameter | Effect |
+|---|---|
+| `MaxCount` | Maximum simultaneous active sounds |
+| `ResolutionRule` | `StopQuietest`: kill the quietest active sound. `PreventNew`: reject new sounds when at cap |
+| `RetriggerTime` | Minimum seconds between new instances (prevents rapid-fire spam) |
+| `MaxDistance` | Only count sounds within this world distance toward the cap |
+| `VolumeScaleMode` | Scale volume of all active sounds when at cap |
+
+Sound Classes form a hierarchy. A concurrency rule on the "SFX" class applies to all children. Override at the leaf level for special cases (player footsteps need more budget than enemy footsteps).
+
+### Stream Caching **[UE4.24+ / UE5]**
+
+Streaming audio only makes sense for long files (typically > 5–10 seconds). Short sounds benefit from loading into memory — random-access memory playback is faster than stream-on-demand.
 
 ```ini
-r.MotionBlurQuality 0          ; 0=off, 4=max quality
-r.DepthOfFieldQuality 0        ; 0=off, 4=max
-r.BloomQuality 5               ; 0=off, 5=default, 6=convolution (expensive)
+au.streamcache.TrimCacheWhenOverBudget 1
+au.streamcache.CacheSizeKB 65536    ; 64 MB audio stream cache
 ```
 
-#### TSR vs DLSS vs FSR
+For music and long ambient, streaming is essential. For SFX, evaluate each sound: streaming adds I/O latency and CPU overhead for seek. Short gunshots, footsteps, and UI sounds should be loaded into memory.
 
-TSR (Temporal Super Resolution) is Epic's built-in solution, fully integrated with Lumen, Nanite, and the velocity buffer. Best quality-to-compatibility ratio — no plugin required. Downside: can produce ghosting/smearing on fast-moving objects, particularly with WPO or PDO.
+### Audio Mixer and Submix Architecture **[UE4.24+ / UE5]**
 
-DLSS (NVIDIA) generally produces the best motion clarity at equivalent quality settings ([community comparisons](https://www.reddit.com/r/nvidia/comments/wb3dh4/dlss_vs_tsr_vs_fsr_20_motion_clarity_comparison/)). Requires an NVIDIA GPU + DLSS plugin. DLSS 3.5 with Ray Reconstruction improves denoising for Lumen.
+The Audio Mixer architecture (default since UE4.24) enables per-source submix routing, plugin DSP effects, and MetaSound's Quartz integration. Each source can route to one or more Submixes (SFX Bus, Music Bus, Voice Bus). Add effects (EQ, reverb, compressor) at the submix level rather than per-sound for efficient processing — one reverb instance on the Environment submix versus one per environmental sound.
 
-FSR (AMD/cross-platform): widest hardware compatibility. Lower quality ceiling than DLSS/TSR; can produce artifacts on fine geometry and foliage. Use for minimum-spec targets.
+With Lumen Spatialization (UE5 HRTF/Ambisonics support): enable `Spatialization Algorithm = HRTF` in Sound Attenuation settings. HRTF adds CPU cost per virtualized source. Budget carefully — HRTF is not free.
 
-All three temporal AA methods require accurate velocity vectors. WPO and PDO must write correct velocity (`Output Velocity` enabled) or temporal methods will ghost on those surfaces.
-
-#### Auto-Exposure
-
-Three metering modes: Manual (fixed EV100 — predictable, required for cutscenes), Histogram (physically correct), Basic (legacy averaging, confused by bright skyboxes).
-
-UE5.1+ breaking change: the old `Min/Max Brightness` parameters were replaced by `Min/Max EV100`. Check exposure settings in projects migrated from UE4.
-
-```ini
-r.EyeAdaptation.MethodOverride -1|0|1|2   ; -1=none, 0=basic, 1=histogram, 2=manual
-```
 
 ---
 
-### Textures and Streaming Pool
+## Extended Reference: World Partition Internals
 
-The streaming pool is the VRAM cache for streamed textures. The default 1000 MB is often insufficient for open-world scenes:
+### Runtime Streaming Grid Architecture **[UE5 only]**
+
+The World Partition runtime streaming grid divides the world into a spatial grid of cells. Each cell has a size (in centimeters) and a loading range. When a Streaming Source (typically the Player Controller) enters the loading range of a cell, that cell begins async streaming. When the source moves outside the range, the cell begins unloading.
+
+Grid configuration:
 ```ini
-r.Streaming.PoolSize 4096    ; 4 GB for high-end PC targets
+RuntimeGrid.CellSize=12800     ; 128 meters (value in cm!)
+RuntimeGrid.LoadingRange=25600 ; 256 meters = 2x Cell Size
 ```
 
-Calibration method: temporarily set `r.Streaming.PoolSize 1`, fly through the level, note the peak warning value, use that value + a safety margin as the production setting ([TechArtHub's streaming pool guide](https://techarthub.com/fixing-texture-streaming-pool-over-budget-in-unreal/)). Never ship `r.Streaming.PoolSize 0` — it means "unlimited" and will crash the engine.
+The default 128 m (12800 cm) works for most cases:
+- Dense urban environments: use 64 m cells for finer-grained streaming
+- Sparse terrain/landscapes: use 256 m cells to reduce cell count and streaming overhead
 
-Texture compression:
+For fast vehicles or flight: add a predictive streaming source based on the player's velocity vector to pre-load 1–2 cells ahead. The default Streaming Source (player controller) is purely reactive — it only triggers streaming after the player is already in the area.
 
-| Format | Channels | Size | Best For |
+Watch out for large actors that span more than one cell size (churches, bridges) — they are "promoted" to a higher grid level and may load independently of normal cells. Design hero structures to fit within cell boundaries, or be prepared for them to have different load behavior.
+
+### HLOD in World Partition — Practical Setup **[UE5 only]**
+
+HLOD in World Partition consists of meshes or impostors rendered for distant streaming cells. The default configuration "Lowest Available LOD" for landscape makes HLODs look like grey blobs at distance.
+
+Key configurations:
+```ini
+; In World Settings → Runtime Partitions → HLOD Setups:
+; INDEX [0] — HLODLayer_Instanced: set Loading Range to cover mountains
+; INDEX [1] — HLOD Merged: set Specific LOD = 4-5 instead of "Lowest Available"
+```
+
+HLOD Instanced type: for Nanite meshes, set HLOD Layer Type = Instanced (no decimation). Nanite handles detail, and instancing streams faster. This prevents the "grey blob" problem for medium-distance Nanite content.
+
+HLOD1 serves double duty: it is also consumed by Lumen's Far Field pass for GI beyond 1 km. If you skip building HLOD, Lumen Far Field will have no geometry to illuminate. Always build HLOD before evaluating Lumen quality in open worlds.
+
+### OFPA Source Control Workflow **[UE5 only]**
+
+One-File-Per-Actor (OFPA) stores each actor as a separate file in the `__ExternalActors__` folder. With non-Perforce VCS (Git LFS, SVN), this creates some specific workflow considerations:
+
+- New actors added to a level still modify the main `.umap` file, not just the actor file
+- Auto-Save can generate thousands of changes in `ExternalActors` simultaneously — disable Auto-Save for large WP scenes
+- Conflicts in actor files are usually binary (they are serialized UAssets) — resolve by taking one version entirely
+- Before renaming folders containing OFPA data: check and update all references first with the Reference Viewer
+
+Diagnostic command:
+```
+wp.Editor.DumpStreamingGenerationLog
+; Output in: Saved/Logs/WorldPartition/
+```
+
+This logs which actors ended up in which streaming cells, their load ranges, and their HLOD assignments. Essential for debugging unexpected streaming behavior or cell count explosions.
+
+---
+
+## Extended Reference: Blueprint Anti-Patterns — Complete Reference
+
+### `Get All Actors Of Class` — Detailed Analysis **[UE4 + UE5]**
+
+`Get All Actors Of Class` iterates the entire actor list of the current world, building a new TArray on every call. The performance cost scales with world complexity:
+
+- A level with 500 actors: ~2,000–5,000 pointer comparisons per call
+- Called in Tick at 60 fps: ~120,000–300,000 comparisons per second
+- Called in Tick on a server with 20 connected clients: multiplied by connection count
+
+Correct alternatives:
+- **Manager/Subsystem registration**: actors register themselves in GameMode or GameState in BeginPlay and unregister in EndPlay. The manager holds a typed TArray. Zero lookup cost.
+- **Overlap/collision events**: for "all enemies within radius," use `SphereTraceMulti` or `GetOverlappingActors` on a collision component — spatially accelerated, no world scan.
+- **Gameplay Tag queries**: for heterogeneous actor types, store a `TMap<FGameplayTag, TArray<AActor*>>` in a Subsystem and query by tag.
+
+### Pure Functions — Execution Model Explained **[UE4 + UE5]**
+
+A "Pure" Blueprint node (green, no execution pins) is re-evaluated every time its output is consumed by a downstream node. If you wire a costly pure function's output into three nodes, the function executes three times.
+
+This is architecturally correct in functional programming terms — pure functions have no side effects, so re-evaluation is safe. But in Blueprints, "pure" only means no exec pin, not that it is truly free to call. A pure function that iterates an array will iterate it once per downstream consumer.
+
+Fix: call the function once as an impure (non-pure) call, cache the output in a local variable, then consume the variable. Right-click the pure node → Convert to Impure.
+
+### Soft Reference Memory Escape Patterns **[UE4 + UE5]**
+
+The memory leak from hard references in Blueprints can be traced systematically:
+
+1. Open the suspect Blueprint in the editor
+2. Right-click the asset in the Content Browser → `Size Map`
+3. The Size Map shows a tree of all directly and transitively hard-referenced assets
+4. Any class referenced via `Cast To` appears as a hard reference
+
+The escape pattern:
+- Change casts to `Cast To Actor` (or another lightweight base class) — the specific derived class is no longer a hard reference
+- Use Blueprint Interfaces instead of direct casts for cross-Blueprint communication
+- For assets (meshes, textures, sounds) that should only load on demand: use `TSoftObjectPtr<T>` and `Async Load Asset`
+
+When direct casting is acceptable: within the same module (e.g., a Component casting to its owning actor), or when the reference cost has already been paid and the result is cached in a variable (cast once in BeginPlay, store the result).
+
+### Blueprint VM Optimization Cheat Sheet **[UE4 + UE5]**
+
+| Anti-Pattern | Cost | Fix | Engine |
 |---|---|---|---|
-| DXT1 / BC1 | RGB (no alpha) | 4 bpp | Opaque diffuse |
-| BC4 | R only | 4 bpp | Single-channel masks, heightmaps |
-| BC5 | RG | 8 bpp | Normal maps (stores XY, derives Z) |
-| BC7 | RGBA | 8 bpp | High-quality diffuse with alpha |
-
-UE5 uses BC5 by default for Normal Map compression — it stores only R and G (X and Y) and derives Z in the shader. Do not use BC7 for normal maps without manual shader handling — it can introduce decompression artifacts in the RG channels ([Rév O'Conner — Texture Compression](https://www.revoconner.com/post/texture-compression-for-unreal-engine-bcn-and-texture-packing)).
-
-sRGB golden rule: normal maps must be linear (sRGB unchecked). Masks, roughness, metallic, AO — all linear. Albedo/Color — sRGB. Quick diagnostic: if a packed texture looks too dark or too bright, check sRGB first.
-
----
-
-### Foliage and Nanite Foliage
-
-Nanite foliage virtualizes triangle rendering, eliminating traditional LOD overhead. But Nanite does not support per-vertex WPO wind animation — enabling WPO on Nanite foliage forces programmable rasterization, negating the benefit.
-
-Solutions for wind with Nanite:
-1. Pivot Painter 2: bake pivot data into UV channels. The shader can be optimized by disabling unused Wind Settings groups (each disabled group removes instructions). This is the recommended production approach ([StraySpark Nanite foliage guide](https://www.strayspark.studio/blog/nanite-foliage-ue5-complete-guide)).
-2. Hybrid LOD: LOD0 as a traditional mesh with WPO wind; LOD1+ as Nanite with instance-level sway only.
-3. Per-Instance Custom Data: instance animation (rotation around the base pivot) for subtle swaying.
-
-Procedural Foliage Spawner trap: enabling collision on procedurally spawned foliage kills performance (the physics engine iterates all instances). The Kite Demo deliberately has no foliage collision. Use a proximity sphere around the player with separate simplified collision proxies.
-
-Foliage density scalability:
-```ini
-[FoliageQuality@0]
-foliage.DensityScale=0.4
-[FoliageQuality@2]
-foliage.DensityScale=1.0
-```
+| Tick enabled on every actor | Per-frame VM dispatch | Uncheck Start with Tick Enabled | UE4 + UE5 |
+| `Get All Actors Of Class` in Tick | O(n) scan every frame | Manager/subsystem registration | UE4 + UE5 |
+| Cast To BP_X in UI Blueprint | BP_X fully loaded in memory | BPI or base-class cast | UE4 + UE5 |
+| Pure node wired to 3 consumers | Executes 3 times | Convert to impure + cache | UE4 + UE5 |
+| `ForEachLoop` without break | Full array always traversed | ForEachLoopWithBreak + Break pin | UE4 + UE5 |
+| Spawn actor in Construction Script | Orphans on every property change | Child Actor Component | UE4 + UE5 |
+| `Make Array` in Tick | Heap alloc every frame | Member variable array | UE4 + UE5 |
+| `Delay` for cancellable logic | Cannot be cancelled, crash risk | Set Timer by Event | UE4 + UE5 |
+| `Sequence` to spread work over time | All pins fire in same frame | Set Timer by Event chain | UE4 + UE5 |
+| `Set Timer by Event` without handle | Cannot cancel | Store handle, use Clear Timer | UE4 + UE5 |
+| Polling `Is Valid` in Tick | Unnecessary GC lookups | Event/delegate on destroy | UE4 + UE5 |
+| Direct cast in UI widget to player | Character class in memory always | Blueprint Interface | UE4 + UE5 |
+| `Set Actor Tick Enabled` in Tick | Recursive overhead | Call only on state transitions | UE4 + UE5 |
+| Hard ref in GameInstance variable | Asset loaded for entire session | Soft reference + lazy load | UE4 + UE5 |
 
 ---
 
-### Lesser-Known Tech Art Tricks
+## Extended Reference: Tech Art Tricks — Complete Reference
 
-#### Custom Depth + Custom Stencil for Cheap Masks
+### Foliage Nanite — Practical Decision Matrix **[UE5 only]**
 
-The Custom Depth Pass renders selected actors to a separate depth buffer with no extra shading cost (depth only). Custom Stencil adds an 8-bit integer ID per actor.
+The correct approach to foliage rendering in UE5 depends on several interacting factors:
 
-Setup:
-1. `Project Settings → Rendering → Custom Depth-Stencil Pass → Enabled with Stencil`
-2. On the actor: `Rendering → Render Custom Depth Pass: ✓` and set `Custom Depth Stencil Value` (0–255).
-3. In the post-process material: `Scene Texture → Custom Stencil` + component mask.
-
-Uses: object outlines, see-through walls, decal masking (blood decal only on floors — stencil value 1 on floors, decal passes only when stencil == 1).
-
-Cost: the Custom Depth pass adds a separate batch of draw calls for all marked actors. Keep the count low; do not enable it globally on thousands of props.
-
-#### Material Attributes — Breaking the Shader Graph into Chunks
-
-Enable `Use Material Attributes` on a material or function to collapse all inputs/outputs into a single `MaterialAttributes` pin. Use `BlendMaterialAttributes` to lerp between two attribute structs — ideal for layering. This lets you build the material graph as composable functions: `BaseLayer` → `WetnessLayer` → `SnowLayer`, all without spaghetti wire routing.
-
-#### Shared Wrap Sampler — Going Beyond the 16-Sampler Limit
-
-Hardware supports 16 texture sampler registers per shader. UE5's `Shared:Wrap` and `Shared:Clamp` share two engine-wide sampler states across all textures, allowing a material to reference up to 128 textures ([Reddit discovery thread](https://www.reddit.com/r/unrealengine/comments/3myppm/til_you_can_use_more_than_16_texture_samplers_by/)).
-
-How to use: on any `Texture Sample` node, set `Sampler Source → Shared: Wrap` (or `Shared: Clamp`). Trade-off: all textures using the shared sampler must use the same wrapping mode. Landscape materials with many layers need this regularly.
-
-When to use: when the material editor reports "too many texture samplers" or a landscape material requires more than 16 unique textures.
-
-#### Render Targets for Cheap Procedural Effects
-
-Render Targets let you run material evaluation and store the result as a texture for subsequent frames. Uses: procedural terrain masks, ripple simulations, trail/history effects.
-
-Warning: GPU readback is expensive. Reading Render Target pixel data back to CPU via `ReadRenderTargetPixels` is synchronous and stalls the CPU-GPU pipeline — it can cost several milliseconds ([Froyok's Render Target performance analysis](https://www.froyok.fr/blog/2020-06-render-target-performances/)). Use `EnqueueCopy` (non-blocking async readback) for gameplay data and consume the result a frame later.
-
-Use `Begin/EndDrawCanvasToRenderTarget` when performing multiple draws per frame to a render target — this reuses the FCanvas object instead of recreating it (which `DrawMaterialToRenderTarget` does, leading to O(N) allocations for N draws).
-
-#### Quad Overdraw View Mode
-
-`View → Optimization Viewmodes → Shader Complexity & Quads` reveals how many GPU quads (2×2 pixel groups) are wasted by sub-pixel triangles. When a triangle is smaller than one quad, the GPU still shades all 4 pixels — 75% wasted work. This is the primary reason high-poly assets without Nanite are expensive even when they are not prominent ([ArtStation blog on quad overdraw](https://daanmeysman.artstation.com/blog/7goy/keeping-your-games-optimized-part-1-triangles)).
-
-#### LUT Packed Textures
-
-Instead of sampling multiple 1-channel textures, pack them into a single RGBA texture and use component masks. This reduces the texture sampler count (critical at the 16-sampler limit) and improves cache coherence — one texture fetch returns four values.
-
-Standard Substance Painter packing: R = AO, G = Roughness, B = Metallic. Set sRGB off on packed textures — all channels must be linear.
-
----
-
-## Part 5: Top 20 Most Common Mistakes
-
-| Mistake | Why It Hurts | Fix |
+| Foliage Type | Recommended Approach | Reason |
 |---|---|---|
-| Nanite on meshes < 300 triangles | Fixed clustering overhead outweighs the gains; 3 ms wasted | Disable Nanite on simple meshes; use ISM |
-| Nanite Masked + WPO on foliage | Programmable Rasterizer + VSM shadow invalidation = 2–4x more expensive | Disable WPO shadow; set WPO Disable Distance; consider opaque geometry |
-| Fallback Relative Error = 0 | Fallback mesh identical to original; 100–400 MB VRAM wasted | Set Fallback Triangle Percent = 1-5%, Relative Error = 1.0 |
-| VSM Page Pool = 4096 in open world | Overflow = stippling shadows | Increase to 8192 (PC/PS5); monitor stat VirtualShadowMapCache |
-| Dozens of Point Lights with Cast Shadows | Each local VSM light = its own shadow pages = page pool overflow | Fill lights without shadows; shadows only on key lights |
-| Lumen without tuning ("Epic" scalability) | Settings calibrated for high-end benchmarks, not production | Lower DownsampleFactor, MaxRoughnessToTrace, TracingOctahedronResolution |
-| Monolithic building mesh with an interior | Lumen does not generate Cards for the interior → pink GI artifacts | Build modularly: separate meshes for walls, floor, ceiling |
-| Tick enabled by default on everything | 200 actors × 1 Branch node = 200 VM dispatch calls/frame | Uncheck Start with Tick Enabled; use Set Actor Tick Enabled when needed |
-| `Get All Actors Of Class` in Tick | O(n) scan of the entire world every frame | Manager/Subsystem registration in BeginPlay/EndPlay |
-| Cast To BP_PlayerCharacter everywhere | Entire class tree loaded into memory in every referencing Blueprint | Use BPI (Blueprint Interface); cache one cast in BeginPlay |
-| Pure function wired to multiple nodes | Function executes N times (once per consumer) | Convert to impure; cache result in a variable |
-| Spawning actors in the Construction Script | Orphaned actors on every property change | Child Actor Components; spawn in BeginPlay |
-| `Delay` instead of Timer for cancellable logic | Cannot be cancelled; crash when actor is destroyed mid-delay | Set Timer by Event with stored handle + Clear Timer |
-| TWeakObjectPtr::IsValid() + Get() in hot-path | Double validity check = double cache miss into GUObjectArray | `if (UObject* Obj = WeakPtr.Get()) { ... }` — single check |
-| Raw UObject* without UPROPERTY across frames | GC can collect the object → dangling pointer | TObjectPtr<T> or TWeakObjectPtr + IsValid check |
-| `this` in lambda delegates | Crash when actor is GC'd before lambda fires | AddWeakLambda or MakeWeakObjectPtr in capture |
-| Static Switch > 5 per master material | 2^N permutations = ballooning cook time, PSO stalls | Max 5 switches; Material Layering for complexity |
-| Missing `Replicates = true` on a networked actor | Zero replication, no RPCs work | Class Defaults → Replication → Replicates = true |
-| `r.Streaming.PoolSize 0` (unlimited) | Engine crash | Always set an explicit MB value |
-| HLOD on "Lowest Available LOD" for landscape | Grey blob in the distance — looks bad and is misleading | Set Specific LOD = 4-5 in HLOD Setups |
+| Dense grass, short ground cover | Non-Nanite HISM with LODs | < 300 triangles per instance; Nanite overhead not worth it |
+| Small bushes, flowers | Non-Nanite HISM with LODs | Masked material would force software raster |
+| Medium shrubs with alpha-card leaves | Opaque geometry leaves + Nanite | Eliminates masked material overhead |
+| Trees with wind animation | Hybrid: LOD0 traditional WPO, LOD1+ Nanite | LOD0 close up uses WPO normally; Nanite for distance |
+| Rocky ground clutter | Nanite + ISM | Simple opaque material, enough triangles, instance batching |
+| Cliff faces, large rocks | Nanite | Hero assets, benefits most from Nanite's micro-polygon rendering |
 
----
+The procedural foliage spawner creates thousands of instances. For collision: use a proximity sphere around the player instead of per-instance physics collision. The engine cannot efficiently process physics on 50,000 foliage instances.
 
-## Part 6: Key CVars Quick Reference
+### Custom Depth Stencil — Stencil Value Strategy **[UE4 + UE5]**
 
-### Nanite
+The 8-bit stencil (values 0–255) should be allocated as a shared resource across systems:
 
-| CVar | Default | Description |
-|---|---|---|
-| `r.Nanite.MaxPixelsPerEdge` | 1 | Primary Nanite scaling knob; 2–4 on low/medium |
-| `r.Nanite.Tessellation` | 0 | Enable tessellation (experimental) |
-| `r.Nanite.DicingRate` | 2 | Tessellation density (higher = cheaper) |
-| `r.Nanite.Streaming.StreamingPoolSize` | 512 | Nanite streaming pool (MB) |
+- Values 0: unused / default
+- Values 1–15: outline system (character selection, interaction highlights)
+- Values 16–31: hit-flash system (enemy hit indicator)
+- Values 32–47: decal masking (footprints on stencil == 32 surfaces only)
+- Values 48–63: see-through walls (X-ray mode for walls with stencil == 48)
 
-### Lumen
+This allows a single Custom Depth pass to serve multiple systems simultaneously, rather than adding a separate render pass per feature. The cost: one extra depth-only pass for all actors with Custom Depth enabled.
 
-| CVar | Default | Description |
-|---|---|---|
-| `r.Lumen.ScreenProbeGather.DownsampleFactor` | 1 | Lower GI resolution; 2 = large gains |
-| `r.Lumen.ScreenProbeGather.TracingOctahedronResolution` | 2 | Lower = faster, noisier |
-| `r.Lumen.Reflections.DownsampleFactor` | 1 | Half-res reflections; saves 1-2 ms |
-| `r.Lumen.Reflections.MaxRoughnessToTrace` | 0.6 | Only shiny materials receive RT reflections |
-| `r.LumenScene.FarField` | 0 | Enable Far Field for open worlds |
-| `r.LumenScene.FarField.OcclusionOnly` | 0 | UE5.6: ~50% cheaper Far Field |
-| `r.LumenScene.SurfaceCache.MeshCardsMinSize` | 4 | Minimum mesh size for Surface Cache |
+Performance note: the Custom Depth pass adds a separate batch of draw calls for all marked actors. For systems that activate/deactivate frequently (hit flash), toggle `Render Custom Depth Pass` on the component rather than enabling it permanently. Permanent enablement on hundreds of actors defeats the purpose of the selective pass.
 
-### Virtual Shadow Maps
+### Render Targets for Procedural Workflows **[UE4 + UE5]**
 
-| CVar | Default | Description |
-|---|---|---|
-| `r.Shadow.Virtual.MaxPhysicalPages` | 4096 | Page pool size (increase to 8192 for open world) |
-| `r.Shadow.Virtual.NonNanite.IncludeInCoarsePages` | 1 | Set 0 for heavy foliage scenes |
-| `r.Shadow.Virtual.Cache.MaxFramesSinceLastUsed` | 60 | Reduce to 20 during fast WP streaming |
-| `r.Shadow.Virtual.UseAsync` | 0 | Async compute; hides ~0.4 ms |
-| `r.Shadow.Virtual.Clipmap.LastLevel` | 22 | Reduce when using horizontal fog |
-| `r.Shadow.Virtual.ResolutionLodBiasDirectional` | 0 | 1.0 for Steam Deck |
-| `r.Shadow.Virtual.Cache.MaxMaterialPositionInvalidationRange` | 10 | Limit WPO shadow invalidation radius |
+Render Targets let you run material evaluation and store the result as a texture for subsequent frames. Production uses:
+- Procedural terrain masks (snow accumulation, wetness spreading)
+- Ripple simulations (water surface disturbed by rain or movement)
+- Trail/history effects (footprints in snow, tire tracks in mud)
+- Decal accumulation (permanent damage decals composited into a surface mask)
 
-### Materials and Rendering
+Performance rules:
+- GPU readback is expensive: `ReadRenderTargetPixels` is synchronous and stalls the CPU-GPU pipeline — can cost several milliseconds ([Froyok's Render Target performance analysis](https://www.froyok.fr/blog/2020-06-render-target-performances/)). Use `EnqueueCopy` (non-blocking async readback) for gameplay data and consume the result a frame later.
+- `Begin/EndDrawCanvasToRenderTarget` when performing multiple draws per frame — this reuses the FCanvas object. `DrawMaterialToRenderTarget` recreates the FCanvas each call, leading to O(N) allocations for N draws per frame.
+- Render Targets that update every frame contribute to GPU memory bandwidth. Size them appropriately — a 1024×1024 RGBA8 Render Target updating at 60 fps = 256 MB/s of write bandwidth.
 
-| CVar | Default | Description |
-|---|---|---|
-| `r.MaterialQualityLevel` | 3 | 0=Low, 1=Medium, 2=High, 3=Epic |
-| `r.BloomQuality` | 5 | 0=off, 5=default, 6=convolution |
-| `r.MotionBlurQuality` | 4 | 0=off, 4=max |
-| `r.DepthOfFieldQuality` | 4 | 0=off, 4=max |
-| `r.EyeAdaptation.MethodOverride` | -1 | -1=none, 2=manual |
+### Lumen Surface Cache — Advanced Tuning **[UE5 only]**
 
-### Textures and Streaming
+The Lumen Surface Cache is a set of cards (Lumen Cards) generated for each mesh. Understanding what determines card quality:
 
-| CVar | Default | Description |
-|---|---|---|
-| `r.Streaming.PoolSize` | 1000 | Texture streaming pool (MB) — NEVER 0 |
-| `r.VT.PoolSizeScale` | 1.0 | Scale multiplier for the VT pool |
-| `r.VT.Residency.Show` | 0 | Pool occupancy HUD |
+- Object must be at least ~4 cm in size (`r.LumenScene.SurfaceCache.MeshCardsMinSize`)
+- Default 6 cards per object — enough for simple convex shapes
+- Interior-critical meshes (rooms, corridors) need 8–12 cards (`Num Lumen Mesh Cards` in Static Mesh Editor → Build Settings)
+- Thin objects (walls, fences) may need `Two-Sided Distance Field Generation` enabled in mesh settings
 
-### Niagara and Foliage
+Pink artifacts in the Surface Cache visualization mean:
+- The card is not yet updated (normal during load)
+- The mesh is too small for the Surface Cache
+- The mesh is not generating cards (check `Generate Mesh Distance Fields` is enabled)
 
-| CVar | Default | Description |
-|---|---|---|
-| `foliage.DensityScale` | 1.0 | Scale instance counts |
-| `r.HairStrands.Voxelization` | 1 | Set 0 for secondary characters |
-| `r.HairStrands.RasterizationScale` | 1.0 | Reduce to 0.1 |
+Yellow areas = culled (too distant). Address by increasing `r.LumenScene.SurfaceCache.MeshCardsMinSize` or by checking `Emissive Light Source` on the actor to prevent culling for emissive sources.
 
-### Volumes and Environment
-
-| CVar | Default | Description |
-|---|---|---|
-| `r.VolumetricFog.GridPixelSize` | 16 | Tile size per froxel (8 = high quality) |
-| `r.VolumetricFog.GridSizeZ` | 64 | Z slices (128 = smoother light shafts) |
-
-### Occlusion
-
-| CVar | Default | Description |
-|---|---|---|
-| `r.HZBOcclusion` | 1 | Hierarchical Z-Buffer occlusion |
-| `gc.AssetClusteringEnabled` | 1 | GC clusters for assets |
-
----
-
-## Appendix: Further Reading
-
-### Conferences and Talks
-
-- [Nanite for Artists | GDC 2024](https://www.youtube.com/watch?v=eoxYceDfKEM) — comprehensive Nanite talk from Epic
-- [An Artist's Guide to Nanite Tessellation | Unreal Fest 2024](https://www.youtube.com/watch?v=6igUsOp8FdA) — practical tessellation guide
-- [The Future of Nanite Foliage | Unreal Fest Stockholm 2025](https://www.youtube.com/watch?v=aZr-mWAzoTg) — Quixel + CD Projekt RED demo
-- [Optimizing the Game Thread | Unreal Fest 2024](https://www.youtube.com/watch?v=KxREK-DYu70) — Blueprint and game thread optimization
-- [TSR/Nanite/Lumen/VSM Insights | Unreal Fest Gold Coast 2024](https://www.youtube.com/watch?v=szgnZx2b0Zg) — rendering systems insights from the Japan Support Team
-- [Scaling for Quality & Performance | Unreal Fest Bali 2025](https://www.youtube.com/watch?v=Q1whHlGJB_o) — BADMAD ROBOTS case study
-- [Lumen with Immortalis | Arm/Unreal Fest 2023](https://www.slideshare.net/slideshow/unreal-fest-2023-lumen-with-immortalis/266167635) — Lumen optimization deep dive
-
-### Blogs and Articles
-
-- [Tom Looman — UE5 Performance Articles](https://tomlooman.com) — comprehensive articles on C++, profiling, UE5.5/5.6 highlights
-- [StraySpark Studio Blog](https://www.strayspark.studio/blog) — World Partition, VSM, Lumen, Nanite Foliage deep dives
-- [Alex Forsythe — Blueprints vs C++](http://awforsythe.com/unreal/blueprints_vs_cpp/) — essential architecture decision reading
-- [Intel UE5 Optimization Guide](https://www.intel.com/content/www/us/en/developer/articles/technical/unreal-engine-optimization-chapter-2.html) — Nanite, Lumen, practical settings
-- [NVIDIA UE5.4 Raytracing Guideline (PDF)](https://dlss.download.nvidia.com/uebinarypackages/Documentation/UE5+Raytracing+Guideline+v5.4.pdf) — Hardware Lumen, DLSS, RT pipeline
-- [AMD GPUOpen UE Performance Guide](https://gpuopen.com/learn/unreal-engine-performance-guide/) — GPU profiling, RenderDoc
-- [Intax Blueprint VM Performance Guide](https://intaxwashere.github.io/blueprint-performance/) — deep dive into the Blueprint VM
-- [xbloom.io — World Partition Internals](https://xbloom.io/2025/10/24/unreals-world-partition-internals/) — WP internal architecture
-- [Chris McCole — Culling in UE4/UE5](https://www.chrismccole.com/blog/culling-in-ue4ue5) — culling systems overview
-- [George Prosser — Optimizing TWeakObjectPtr](https://prosser.io/optimizing-tweakobjectptr-usage/) — low-level C++ pointer optimization
-- [ikrima.dev — FFastArraySerializer](https://ikrima.dev/ue4guide/networking/network-replication/fast-tarray-replication/) — network array replication
-- [Rév O'Conner — Texture Compression & BCn](https://www.revoconner.com/post/texture-compression-for-unreal-engine-bcn-and-texture-packing) — texture compression deep dive
-- [TechArtHub — Texture Streaming Pool](https://techarthub.com/fixing-texture-streaming-pool-over-budget-in-unreal/) — streaming pool tuning
-
-### YouTube Channels
-
-- [Ben Cloward](https://www.youtube.com/@BenCloward) — materials, HLSL, shader development
-- [William Faucher](https://www.youtube.com/@WilliamFaucher) — Lumen, lighting, cinematic rendering
-- [Tom Looman](https://www.youtube.com/@TomLoomanton) — C++, AI, gameplay systems in UE5
-- [Alex Forsythe](https://www.youtube.com/@AlexForsythe) — Blueprint vs C++, architecture
-
-### Repositories and Resources
-
-- [Awesome Unreal Engine (GitHub)](https://github.com/insthync/awesome-unreal) — curated list of plugins, tools, and tutorials
-- [unrealcommunity.wiki](https://unrealcommunity.wiki) — community-maintained wiki with deep dives
-- [Epic Developer Community](https://dev.epicgames.com/community/) — official tutorials and Knowledge Base
-- [r/unrealengine](https://www.reddit.com/r/unrealengine/) — community Q&A and real-world experience sharing
-
----
-
-This guide compiles production knowledge from UE5.3–5.5. CVars and APIs were current at time of writing — verify against the Release Notes when upgrading the engine version.
