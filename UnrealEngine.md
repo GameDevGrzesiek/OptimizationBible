@@ -29,7 +29,98 @@ You can find them [HERE](https://github.com/GameDevGrzesiek/OptimizationBible/bl
 
 ## Table of Contents
 
-TODO
+- [UE4 / UE5 Optimization Guide](#ue4-ue5-optimization-guide)
+  - [Guidelines per Specialization](#guidelines-per-specialization)
+    - [General Tips [UE4 + UE5]](#general-tips-ue4-ue5)
+    - [Code and Mechanics (Programmers / Gameplay Engineers) [UE4 + UE5]](#code-and-mechanics-programmers-gameplay-engineers-ue4-ue5)
+    - [Blueprint Scripters [UE4 + UE5]](#blueprint-scripters-ue4-ue5)
+    - [Level Design / Environment Art [UE4 + UE5 unless tagged]](#level-design-environment-art-ue4-ue5-unless-tagged)
+    - [Materials / Shader Authors [UE4 + UE5]](#materials-shader-authors-ue4-ue5)
+    - [Meshes / 3D Art [UE4 + UE5]](#meshes-3d-art-ue4-ue5)
+    - [Lights and Shadows [UE4 + UE5]](#lights-and-shadows-ue4-ue5)
+    - [VFX / Niagara [UE4 + UE5]](#vfx-niagara-ue4-ue5)
+    - [Audio [UE4 + UE5]](#audio-ue4-ue5)
+    - [Animations [UE4 + UE5]](#animations-ue4-ue5)
+    - [UI / UMG / Slate [UE4 + UE5]](#ui-umg-slate-ue4-ue5)
+    - [Networking and Multiplayer [UE4 + UE5]](#networking-and-multiplayer-ue4-ue5)
+    - [QA / Build / Production [UE4 + UE5]](#qa-build-production-ue4-ue5)
+    - [Tech Art [UE4 + UE5]](#tech-art-ue4-ue5)
+    - [Last Resort Methods [UE4 + UE5]](#last-resort-methods-ue4-ue5)
+  - [Optimization Sweep Steps (Pre-Milestone Checklist)](#optimization-sweep-steps-pre-milestone-checklist)
+    - [Map Objects](#map-objects)
+    - [Meshes / Models](#meshes-models)
+    - [Lighting](#lighting)
+    - [Volumetrics](#volumetrics)
+    - [Post Processing](#post-processing)
+    - [Streaming and Memory](#streaming-and-memory)
+    - [Networking Sweep (Multiplayer Titles)](#networking-sweep-multiplayer-titles)
+    - [Build and Cook Validation](#build-and-cook-validation)
+  - [Top 30 Most Common Mistakes](#top-30-most-common-mistakes)
+  - [CVars Quick Reference](#cvars-quick-reference)
+    - [Nanite CVars [UE5 only]](#nanite-cvars-ue5-only)
+    - [Lumen CVars [UE5 only]](#lumen-cvars-ue5-only)
+    - [Virtual Shadow Maps CVars [UE5 only]](#virtual-shadow-maps-cvars-ue5-only)
+    - [Streaming CVars [UE4 + UE5]](#streaming-cvars-ue4-ue5)
+    - [Niagara CVars [UE5 primarily; some UE4]](#niagara-cvars-ue5-primarily-some-ue4)
+    - [Replication CVars [UE4 + UE5]](#replication-cvars-ue4-ue5)
+    - [Animation CVars [UE4 + UE5]](#animation-cvars-ue4-ue5)
+    - [Materials and Post-Process CVars [UE4 + UE5]](#materials-and-post-process-cvars-ue4-ue5)
+    - [GC and Code CVars [UE4 + UE5]](#gc-and-code-cvars-ue4-ue5)
+    - [Occlusion, Volumetrics, and Environment CVars [UE4 + UE5]](#occlusion-volumetrics-and-environment-cvars-ue4-ue5)
+  - [UE4 vs UE5 Feature Mapping](#ue4-vs-ue5-feature-mapping)
+    - [Render Feature Equivalence Table](#render-feature-equivalence-table)
+    - [Key UPROPERTY Changes UE4 Ôćĺ UE5](#key-uproperty-changes-ue4-ue5)
+  - [Profiling Patterns](#profiling-patterns)
+    - [Common Frame Spike Patterns and Solutions [UE4 + UE5]](#common-frame-spike-patterns-and-solutions-ue4-ue5)
+    - [TRACEBOOKMARK Workflow for Automated Regression [UE5.3+]](#tracebookmark-workflow-for-automated-regression-ue53)
+    - [Identifying the Frame Budget Breakdown [UE4 + UE5]](#identifying-the-frame-budget-breakdown-ue4-ue5)
+  - [Networking Deep Dive](#networking-deep-dive)
+    - [Conditional Replication Patterns [UE4 + UE5]](#conditional-replication-patterns-ue4-ue5)
+    - [Replication Graph Spatial Grid Setup [UE4.20+ / UE5]](#replication-graph-spatial-grid-setup-ue420-ue5)
+    - [Server-Side Move Validation [UE4 + UE5]](#server-side-move-validation-ue4-ue5)
+  - [Build, Cook, and Iteration](#build-cook-and-iteration)
+    - [Derived Data Cache (DDC) Strategy [UE4 + UE5]](#derived-data-cache-ddc-strategy-ue4-ue5)
+    - [Live Coding Safe Practices [UE4.22+ / UE5 default]](#live-coding-safe-practices-ue422-ue5-default)
+    - [Module Organization for Large Projects [UE4 + UE5]](#module-organization-for-large-projects-ue4-ue5)
+  - [GC, Memory, and Container Patterns](#gc-memory-and-container-patterns)
+    - [GC Clusters [UE4 + UE5]](#gc-clusters-ue4-ue5)
+    - [UObject Allocation Patterns [UE4 + UE5]](#uobject-allocation-patterns-ue4-ue5)
+    - [Container Performance Patterns [UE4 + UE5]](#container-performance-patterns-ue4-ue5)
+  - [Extended Reference: Materials and Shaders ÔÇö Advanced Patterns](#extended-reference-materials-and-shaders-advanced-patterns)
+    - [Dynamic Switch vs Static Switch ÔÇö A Critical Distinction [UE4 + UE5]](#dynamic-switch-vs-static-switch-a-critical-distinction-ue4-ue5)
+    - [Custom HLSL Node Reference [UE4 + UE5]](#custom-hlsl-node-reference-ue4-ue5)
+    - [WPO Performance ÔÇö Complete Guide [UE5 only]](#wpo-performance-complete-guide-ue5-only)
+    - [Runtime Virtual Texture (RVT) ÔÇö Complete Setup [UE4.23+ / UE5]](#runtime-virtual-texture-rvt-complete-setup-ue423-ue5)
+  - [Niagara VFX Advanced Patterns](#niagara-vfx-advanced-patterns)
+    - [Niagara Scalability and Effect Types [UE4.20+ / UE5]](#niagara-scalability-and-effect-types-ue420-ue5)
+    - [Niagara Data Channels (NDC) ÔÇö Deep Dive [UE5.3+]](#niagara-data-channels-ndc-deep-dive-ue53)
+    - [GPU Simulation ÔÇö Fixed Bounds and Distance Fields [UE4 + UE5]](#gpu-simulation-fixed-bounds-and-distance-fields-ue4-ue5)
+  - [Audio Advanced Patterns](#audio-advanced-patterns)
+    - [Sound Concurrency Deep Dive [UE4 + UE5]](#sound-concurrency-deep-dive-ue4-ue5)
+    - [Stream Caching [UE4.24+ / UE5]](#stream-caching-ue424-ue5)
+    - [Audio Mixer and Submix Architecture [UE4.24+ / UE5]](#audio-mixer-and-submix-architecture-ue424-ue5)
+  - [Extended Reference: World Partition Internals](#extended-reference-world-partition-internals)
+    - [Runtime Streaming Grid Architecture [UE5 only]](#runtime-streaming-grid-architecture-ue5-only)
+    - [HLOD in World Partition ÔÇö Practical Setup [UE5 only]](#hlod-in-world-partition-practical-setup-ue5-only)
+    - [OFPA Source Control Workflow [UE5 only]](#ofpa-source-control-workflow-ue5-only)
+  - [Blueprint Anti-Patterns](#blueprint-anti-patterns)
+    - [Get All Actors Of Class ÔÇö Detailed Analysis [UE4 + UE5]](#get-all-actors-of-class-detailed-analysis-ue4-ue5)
+    - [Pure Functions ÔÇö Execution Model Explained [UE4 + UE5]](#pure-functions-execution-model-explained-ue4-ue5)
+    - [Soft Reference Memory Escape Patterns [UE4 + UE5]](#soft-reference-memory-escape-patterns-ue4-ue5)
+    - [Blueprint VM Optimization Cheat Sheet [UE4 + UE5]](#blueprint-vm-optimization-cheat-sheet-ue4-ue5)
+  - [Tech Art Tricks](#tech-art-tricks)
+    - [Foliage Nanite ÔÇö Practical Decision Matrix [UE5 only]](#foliage-nanite-practical-decision-matrix-ue5-only)
+    - [Custom Depth Stencil ÔÇö Stencil Value Strategy [UE4 + UE5]](#custom-depth-stencil-stencil-value-strategy-ue4-ue5)
+    - [Render Targets for Procedural Workflows [UE4 + UE5]](#render-targets-for-procedural-workflows-ue4-ue5)
+    - [Lumen Surface Cache ÔÇö Advanced Tuning [UE5 only]](#lumen-surface-cache-advanced-tuning-ue5-only)
+  - [Bibliography and Further Reading](#bibliography-and-further-reading)
+    - [Talks (Unreal Fest, GDC)](#talks-unreal-fest-gdc)
+    - [Blogs and Articles](#blogs-and-articles)
+    - [Official Documentation (dev.epicgames.com)](#official-documentation-devepicgamescom)
+    - [YouTube Channels](#youtube-channels)
+    - [Repositories and Community References](#repositories-and-community-references)
+    - [Epic Forums and Knowledge Base](#epic-forums-and-knowledge-base)
+
 ---
 
 ## Guidelines per Specialization
@@ -1240,126 +1331,7 @@ r.Streaming.AmortizeCPUToGPUCopy=0
 
 ---
 
-## Bibliography and Further Reading
-
-### Talks (Unreal Fest, GDC)
-
-- [Optimizing the Game Thread — Unreal Fest 2024 (Jake Simpson)](https://www.youtube.com/watch?v=KxREK-DYu70)
-- [Nanite for Artists — GDC 2024](https://www.youtube.com/watch?v=eoxYceDfKEM)
-- [An Artist's Guide to Nanite Tessellation — Unreal Fest 2024](https://www.youtube.com/watch?v=6igUsOp8FdA)
-- [The Future of Nanite Foliage — Unreal Fest Stockholm 2025](https://www.youtube.com/watch?v=aZr-mWAzoTg)
-- [TSR/Nanite/Lumen/VSM Insights — Unreal Fest Gold Coast 2024](https://www.youtube.com/watch?v=szgnZx2b0Zg)
-- [Scaling for Quality and Performance — Unreal Fest Bali 2025](https://www.youtube.com/watch?v=Q1whHlGJB_o)
-- [Lumen with Immortalis — Arm/Epic Unreal Fest 2023](https://www.slideshare.net/slideshow/unreal-fest-2023-lumen-with-immortalis/266167635)
-- [Culling & Occlusion in Unreal (2025)](https://www.youtube.com/watch?v=wOdpF4WMckE)
-
-### Blogs and Articles
-
-**Tom Looman:**
-- [Tom Looman — UE5.6 Performance Highlights](https://tomlooman.com/unreal-engine-5-6-performance-highlights/)
-- [Tom Looman — UE5.5 Performance Highlights](https://tomlooman.com/unreal-engine-5-5-performance-highlights/)
-- [Tom Looman — Adding Counters and Traces](https://tomlooman.com/unreal-engine-profiling-stat-commands/)
-- [Tom Looman — Asset Manager and Async Loading](https://tomlooman.com/unreal-engine-asset-manager-async-loading/)
-- [Tom Looman — Optimization Talk](https://tomlooman.com/unreal-engine-optimization-talk/)
-
-**Ben Cloward:**
-- [Ben Cloward — HLSL Tutorial (YouTube)](https://www.youtube.com/watch?v=qaNPY4alhQs)
-
-**William Faucher:**
-- [William Faucher YouTube Channel](https://www.youtube.com/@WilliamFaucher) — Lumen, lighting, cinematic rendering
-
-**Alex Forsythe:**
-- [Alex Forsythe — Blueprints vs C++](http://awforsythe.com/unreal/blueprints_vs_cpp/)
-- [Alex Forsythe YouTube Channel](https://www.youtube.com/@AlexForsythe)
-
-**StraySpark:**
-- [StraySpark — World Partition Deep Dive](https://www.strayspark.studio/blog/ue5-world-partition-deep-dive-streaming-hlod)
-- [StraySpark — VSM Optimization for Open Worlds](https://www.strayspark.studio/blog/virtual-shadow-map-optimization-open-worlds-ue5-7)
-- [StraySpark — Lumen 60fps Guide](https://www.strayspark.studio/blog/ue5-lumen-optimization-60fps)
-- [StraySpark — Nanite Foliage Guide](https://www.strayspark.studio/blog/nanite-foliage-ue5-complete-guide)
-
-**Intel:**
-- [Intel — UE5 Optimization Guide Chapter 2](https://www.intel.com/content/www/us/en/developer/articles/technical/unreal-engine-optimization-chapter-2.html)
-- [Intel — UE5 Profiling Fundamentals](https://www.intel.com/content/www/us/en/developer/articles/technical/unreal-engine-optimization-profiling-fundamentals.html)
-
-**AMD GPUOpen:**
-- [AMD GPUOpen — Unreal Engine Performance Guide](https://gpuopen.com/learn/unreal-engine-performance-guide/)
-
-**NVIDIA:**
-- [NVIDIA — UE5.4 Raytracing Guide (PDF)](https://dlss.download.nvidia.com/uebinarypackages/Documentation/UE5+Raytracing+Guideline+v5.4.pdf)
-
-**Other Technical References:**
-- [Intax — Blueprint VM Performance Guide](https://intaxwashere.github.io/blueprint-performance/)
-- [George Prosser — Optimizing TWeakObjectPtr](https://prosser.io/optimizing-tweakobjectptr-usage/)
-- [xbloom.io — World Partition Internals](https://xbloom.io/2025/10/24/unreals-world-partition-internals/)
-- [Chris McCole — Culling in UE4/UE5](https://www.chrismccole.com/blog/culling-in-ue4ue5)
-- [Matt Gibson — Unreal Replication Settings](https://mattgibson.dev/blog/unreal-replication-settings)
-- [Kieran Newland — Replication Graph Tutorial](https://www.kierannewland.co.uk/replication-graph)
-- [ikrima.dev — Fast TArray Replication](https://ikrima.dev/ue4guide/networking/network-replication/fast-tarray-replication/)
-- [rick.me.uk — C++ Profiling in Unreal Engine 5](https://www.rick.me.uk/posts/2024/12/cpp-profiling-in-unreal-engine-5/)
-- [kantandev.com — UE4 Includes, PCH, and IWYU](http://kantandev.com/articles/ue4-includes-precompiled-headers-and-iwyu-include-what-you-use)
-- [unrealcommunity.wiki — Memory Management](https://unrealcommunity.wiki/memory-management-6rlf3v4i)
-- [unrealcommunity.wiki — Hot Reload and Live Coding](https://unrealcommunity.wiki/live-compiling-in-unreal-projects-tp14jcgs)
-- [unrealcommunity.wiki — Profiling with Unreal Insights](https://unrealcommunity.wiki/profiling-with-unreal-insights-ilad24y4)
-- [Simplygon — HLOD Builder for World Partition](https://www.simplygon.com/posts/54162a3d-390c-47f0-bb55-6fed2f626bd8)
-- [Robert Lewicki — Lambda Weak Pointer Captures](https://unreal.robertlewicki.games/p/daily-unreal-column-50-capture-weak)
-- [voithos.io — Fancier Ticking in Unreal](https://voithos.io/articles/fancier-ticking-in-unreal/)
-- [Tech-Artists.Org — Draw Call Optimization in UE5](https://www.tech-artists.org/t/draw-call-optimization-in-ue5/18217)
-- [Kokku Games — Blueprint Diff with Git](https://kokkugames.com/tutorial-stop-guessing-what-changed-in-your-blueprintsgit-blueprint-diff-inside-unreal-engine/)
-- [Rév O'Conner — Texture Compression and BCn](https://www.revoconner.com/post/texture-compression-for-unreal-engine-bcn-and-texture-packing)
-- [TechArtHub — Texture Streaming Pool](https://techarthub.com/fixing-texture-streaming-pool-over-budget-in-unreal/)
-- [Froyok — Render Target Performance Analysis](https://www.froyok.fr/blog/2020-06-render-target-performances/)
-- [KitBash3D — Level Instances and Packed Level Actors](https://help.kitbash3d.com/en/articles/12038349-a-quick-guide-packed-level-actors-level-instancing-in-unreal-engine-with-kitbash3d)
-- [Outscal — Timers vs Tick Guide](https://outscal.com/blog/unreal-engine-timers-vs-tick)
-- [CBgameDev — UE4/UE5 Optimising Tick Rate](https://www.cbgamedev.com/blog/quick-dev-tip-74-ue4-ue5-optimising-tick-rate)
-- [Brushify — RVT Bootcamp (YouTube)](https://www.youtube.com/watch?v=0-xXIMjlmqE)
-- [Epic Developer Community — Tasks System](https://dev.epicgames.com/documentation/unreal-engine/tasks-systems-in-unreal-engine)
-- [Georgy's Tech Blog — How to Use Mutex in UE](https://georgy.dev/posts/mutex/)
-- [Coconut Lizard — Strings and Other Things](https://www.coconutlizard.co.uk/blog/strings-and-other-things/)
-- [Daanmeysman ArtStation — Quad Overdraw and Triangles](https://daanmeysman.artstation.com/blog/7goy/keeping-your-games-optimized-part-1-triangles)
-- [MoreVFX Academy — Niagara Optimization Guide](https://morevfxacademy.com/complete-guide-to-niagara-vfx-optimization-in-unreal-engine/)
-- [Georgy Prosser — Optimizing TWeakObjectPtr](https://prosser.io/optimizing-tweakobjectptr-usage/)
-- [Intax Blueprint Performance Guide](https://intaxwashere.github.io/blueprint-performance/)
-
-### Official Documentation (dev.epicgames.com)
-
-- [Unreal Insights](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-insights-in-unreal-engine)
-- [Memory Insights](https://dev.epicgames.com/documentation/en-us/unreal-engine/memory-insights-in-unreal-engine)
-- [Networking Insights](https://dev.epicgames.com/documentation/en-us/unreal-engine/networking-insights-in-unreal-engine)
-- [Visibility and Occlusion Culling](https://dev.epicgames.com/documentation/unreal-engine/visibility-and-occlusion-culling-in-unreal-engine)
-- [Tasks System in Unreal Engine](https://dev.epicgames.com/documentation/unreal-engine/tasks-systems-in-unreal-engine)
-- [Developer Guide to Tracing](https://dev.epicgames.com/documentation/en-us/unreal-engine/developer-guide-to-tracing-in-unreal-engine)
-- [Getting Started with Editor Utility Blueprints](https://dev.epicgames.com/community/learning/tutorials/owYv/unreal-engine-getting-started-with-editor-utility-blueprints)
-
-### YouTube Channels
-
-- [Ben Cloward](https://www.youtube.com/@BenCloward) — materials, HLSL, shader development
-- [William Faucher](https://www.youtube.com/@WilliamFaucher) — Lumen, lighting, cinematic rendering
-- [Tom Looman](https://www.youtube.com/@TomLoomanton) — C++, AI, gameplay systems in UE5
-- [Alex Forsythe](https://www.youtube.com/@AlexForsythe) — Blueprint vs C++, architecture
-
-### Repositories and Community References
-
-- [Awesome Unreal (GitHub)](https://github.com/insthync/awesome-unreal) — curated list of UE resources
-- [unrealcommunity.wiki](https://unrealcommunity.wiki) — community-maintained wiki with deep dives
-- [Epic Developer Community](https://dev.epicgames.com/community/) — official tutorials and Knowledge Base
-- [r/unrealengine](https://www.reddit.com/r/unrealengine/) — community Q&A and real-world experience sharing
-
-### Epic Forums and Knowledge Base
-
-- [Epic Forums — GC Clustering Internals](https://forums.unrealengine.com/t/knowledge-base-garbage-collector-internals/501800)
-- [Epic Forums — Why Use TObjectPtr?](https://forums.unrealengine.com/t/why-should-i-replace-raw-pointers-with-tobjectptr/232781)
-- [Epic Forums — Blueprint Nativization Removed](https://forums.unrealengine.com/t/why-was-blueprint-nativization-removed-no-code-preaching/232490)
-- [Epic Forums — Nanite VRAM Fallback Thread](https://forums.unrealengine.com/t/nanite-fallback-mesh-buffers-vram-residence/2563974)
-- [Epic Forums — When to Use Level Instance/PLA/ISM/HISM](https://forums.unrealengine.com/t/when-to-use-level-instance-packed-level-actor-or-ism-hism-in-ue5/2681508)
-- [Epic Forums — Iris Bandwidth Control (UE5.5)](https://forums.unrealengine.com/t/how-is-server-to-client-bandwidth-controlled-in-iris-in-ue-5-5/2675046)
-- [Epic Forums — Shader Permutations Knowledge Base](https://forums.unrealengine.com/t/knowledge-base-understanding-shader-permutations/264928)
-- [Epic Forums — OFPA Best Practices](https://forums.unrealengine.com/t/tips-and-best-practices-for-one-file-per-actor/837886)
-- [Epic Forums — Lumen Surface Cache Scale](https://forums.unrealengine.com/t/lumen-surface-cache-scale-woes/2669365)
-
----
-
-## Extended Reference: UE4 vs UE5 Feature Mapping
+## UE4 vs UE5 Feature Mapping
 
 ### Render Feature Equivalence Table
 
@@ -1395,7 +1367,7 @@ Last revised: 2025. Guide version: 3.0 (Merged Edition). This is a living docume
 
 ---
 
-## Extended Reference: Profiling Patterns
+## Profiling Patterns
 
 ### Common Frame Spike Patterns and Solutions **[UE4 + UE5]**
 
@@ -1450,7 +1422,7 @@ Memory snapshot: `Trace.SnapshotFile` captures a point-in-time snapshot during a
 
 ---
 
-## Extended Reference: Networking Deep Dive
+## Networking Deep Dive
 
 ### Conditional Replication Patterns **[UE4 + UE5]**
 
@@ -1497,7 +1469,7 @@ For physics-based movement with `CharacterMovementComponent`, the server always 
 
 ---
 
-## Extended Reference: Build, Cook, and Iteration
+## Build, Cook, and Iteration
 
 ### Derived Data Cache (DDC) Strategy **[UE4 + UE5]**
 
@@ -1550,7 +1522,7 @@ bInstallInEngineFolder=false
 
 ---
 
-## Extended Reference: GC, Memory, and Container Patterns
+## GC, Memory, and Container Patterns
 
 ### GC Clusters **[UE4 + UE5]**
 
@@ -1682,7 +1654,7 @@ VT thrashing signs: visible resolution flickering, red pool graph (`r.VT.Residen
 
 ---
 
-## Extended Reference: Niagara VFX — Advanced Patterns
+## Niagara VFX Advanced Patterns
 
 ### Niagara Scalability and Effect Types **[UE4.20+ / UE5]**
 
@@ -1721,7 +1693,7 @@ GPU readback (UE5.3+): GPU particles can export data back to CPU/Blueprint at a 
 
 ---
 
-## Extended Reference: Audio Advanced Patterns
+## Audio Advanced Patterns
 
 ### Sound Concurrency Deep Dive **[UE4 + UE5]**
 
@@ -1811,7 +1783,7 @@ This logs which actors ended up in which streaming cells, their load ranges, and
 
 ---
 
-## Extended Reference: Blueprint Anti-Patterns — Complete Reference
+## Blueprint Anti-Patterns
 
 ### `Get All Actors Of Class` — Detailed Analysis **[UE4 + UE5]**
 
@@ -1871,7 +1843,7 @@ When direct casting is acceptable: within the same module (e.g., a Component cas
 
 ---
 
-## Extended Reference: Tech Art Tricks — Complete Reference
+## Tech Art Tricks
 
 ### Foliage Nanite — Practical Decision Matrix **[UE5 only]**
 
@@ -1931,3 +1903,121 @@ Pink artifacts in the Surface Cache visualization mean:
 
 Yellow areas = culled (too distant). Address by increasing `r.LumenScene.SurfaceCache.MeshCardsMinSize` or by checking `Emissive Light Source` on the actor to prevent culling for emissive sources.
 
+---
+
+## Bibliography and Further Reading
+
+### Talks (Unreal Fest, GDC)
+
+- [Optimizing the Game Thread — Unreal Fest 2024 (Jake Simpson)](https://www.youtube.com/watch?v=KxREK-DYu70)
+- [Nanite for Artists — GDC 2024](https://www.youtube.com/watch?v=eoxYceDfKEM)
+- [An Artist's Guide to Nanite Tessellation — Unreal Fest 2024](https://www.youtube.com/watch?v=6igUsOp8FdA)
+- [The Future of Nanite Foliage — Unreal Fest Stockholm 2025](https://www.youtube.com/watch?v=aZr-mWAzoTg)
+- [TSR/Nanite/Lumen/VSM Insights — Unreal Fest Gold Coast 2024](https://www.youtube.com/watch?v=szgnZx2b0Zg)
+- [Scaling for Quality and Performance — Unreal Fest Bali 2025](https://www.youtube.com/watch?v=Q1whHlGJB_o)
+- [Lumen with Immortalis — Arm/Epic Unreal Fest 2023](https://www.slideshare.net/slideshow/unreal-fest-2023-lumen-with-immortalis/266167635)
+- [Culling & Occlusion in Unreal (2025)](https://www.youtube.com/watch?v=wOdpF4WMckE)
+
+### Blogs and Articles
+
+**Tom Looman:**
+- [Tom Looman — UE5.6 Performance Highlights](https://tomlooman.com/unreal-engine-5-6-performance-highlights/)
+- [Tom Looman — UE5.5 Performance Highlights](https://tomlooman.com/unreal-engine-5-5-performance-highlights/)
+- [Tom Looman — Adding Counters and Traces](https://tomlooman.com/unreal-engine-profiling-stat-commands/)
+- [Tom Looman — Asset Manager and Async Loading](https://tomlooman.com/unreal-engine-asset-manager-async-loading/)
+- [Tom Looman — Optimization Talk](https://tomlooman.com/unreal-engine-optimization-talk/)
+
+**Ben Cloward:**
+- [Ben Cloward — HLSL Tutorial (YouTube)](https://www.youtube.com/watch?v=qaNPY4alhQs)
+
+**William Faucher:**
+- [William Faucher YouTube Channel](https://www.youtube.com/@WilliamFaucher) — Lumen, lighting, cinematic rendering
+
+**Alex Forsythe:**
+- [Alex Forsythe — Blueprints vs C++](http://awforsythe.com/unreal/blueprints_vs_cpp/)
+- [Alex Forsythe YouTube Channel](https://www.youtube.com/@AlexForsythe)
+
+**StraySpark:**
+- [StraySpark — World Partition Deep Dive](https://www.strayspark.studio/blog/ue5-world-partition-deep-dive-streaming-hlod)
+- [StraySpark — VSM Optimization for Open Worlds](https://www.strayspark.studio/blog/virtual-shadow-map-optimization-open-worlds-ue5-7)
+- [StraySpark — Lumen 60fps Guide](https://www.strayspark.studio/blog/ue5-lumen-optimization-60fps)
+- [StraySpark — Nanite Foliage Guide](https://www.strayspark.studio/blog/nanite-foliage-ue5-complete-guide)
+
+**Intel:**
+- [Intel — UE5 Optimization Guide Chapter 2](https://www.intel.com/content/www/us/en/developer/articles/technical/unreal-engine-optimization-chapter-2.html)
+- [Intel — UE5 Profiling Fundamentals](https://www.intel.com/content/www/us/en/developer/articles/technical/unreal-engine-optimization-profiling-fundamentals.html)
+
+**AMD GPUOpen:**
+- [AMD GPUOpen — Unreal Engine Performance Guide](https://gpuopen.com/learn/unreal-engine-performance-guide/)
+
+**NVIDIA:**
+- [NVIDIA — UE5.4 Raytracing Guide (PDF)](https://dlss.download.nvidia.com/uebinarypackages/Documentation/UE5+Raytracing+Guideline+v5.4.pdf)
+
+**Other Technical References:**
+- [Intax — Blueprint VM Performance Guide](https://intaxwashere.github.io/blueprint-performance/)
+- [George Prosser — Optimizing TWeakObjectPtr](https://prosser.io/optimizing-tweakobjectptr-usage/)
+- [xbloom.io — World Partition Internals](https://xbloom.io/2025/10/24/unreals-world-partition-internals/)
+- [Chris McCole — Culling in UE4/UE5](https://www.chrismccole.com/blog/culling-in-ue4ue5)
+- [Matt Gibson — Unreal Replication Settings](https://mattgibson.dev/blog/unreal-replication-settings)
+- [Kieran Newland — Replication Graph Tutorial](https://www.kierannewland.co.uk/replication-graph)
+- [ikrima.dev — Fast TArray Replication](https://ikrima.dev/ue4guide/networking/network-replication/fast-tarray-replication/)
+- [rick.me.uk — C++ Profiling in Unreal Engine 5](https://www.rick.me.uk/posts/2024/12/cpp-profiling-in-unreal-engine-5/)
+- [kantandev.com — UE4 Includes, PCH, and IWYU](http://kantandev.com/articles/ue4-includes-precompiled-headers-and-iwyu-include-what-you-use)
+- [unrealcommunity.wiki — Memory Management](https://unrealcommunity.wiki/memory-management-6rlf3v4i)
+- [unrealcommunity.wiki — Hot Reload and Live Coding](https://unrealcommunity.wiki/live-compiling-in-unreal-projects-tp14jcgs)
+- [unrealcommunity.wiki — Profiling with Unreal Insights](https://unrealcommunity.wiki/profiling-with-unreal-insights-ilad24y4)
+- [Simplygon — HLOD Builder for World Partition](https://www.simplygon.com/posts/54162a3d-390c-47f0-bb55-6fed2f626bd8)
+- [Robert Lewicki — Lambda Weak Pointer Captures](https://unreal.robertlewicki.games/p/daily-unreal-column-50-capture-weak)
+- [voithos.io — Fancier Ticking in Unreal](https://voithos.io/articles/fancier-ticking-in-unreal/)
+- [Tech-Artists.Org — Draw Call Optimization in UE5](https://www.tech-artists.org/t/draw-call-optimization-in-ue5/18217)
+- [Kokku Games — Blueprint Diff with Git](https://kokkugames.com/tutorial-stop-guessing-what-changed-in-your-blueprintsgit-blueprint-diff-inside-unreal-engine/)
+- [Rév O'Conner — Texture Compression and BCn](https://www.revoconner.com/post/texture-compression-for-unreal-engine-bcn-and-texture-packing)
+- [TechArtHub — Texture Streaming Pool](https://techarthub.com/fixing-texture-streaming-pool-over-budget-in-unreal/)
+- [Froyok — Render Target Performance Analysis](https://www.froyok.fr/blog/2020-06-render-target-performances/)
+- [KitBash3D — Level Instances and Packed Level Actors](https://help.kitbash3d.com/en/articles/12038349-a-quick-guide-packed-level-actors-level-instancing-in-unreal-engine-with-kitbash3d)
+- [Outscal — Timers vs Tick Guide](https://outscal.com/blog/unreal-engine-timers-vs-tick)
+- [CBgameDev — UE4/UE5 Optimising Tick Rate](https://www.cbgamedev.com/blog/quick-dev-tip-74-ue4-ue5-optimising-tick-rate)
+- [Brushify — RVT Bootcamp (YouTube)](https://www.youtube.com/watch?v=0-xXIMjlmqE)
+- [Epic Developer Community — Tasks System](https://dev.epicgames.com/documentation/unreal-engine/tasks-systems-in-unreal-engine)
+- [Georgy's Tech Blog — How to Use Mutex in UE](https://georgy.dev/posts/mutex/)
+- [Coconut Lizard — Strings and Other Things](https://www.coconutlizard.co.uk/blog/strings-and-other-things/)
+- [Daanmeysman ArtStation — Quad Overdraw and Triangles](https://daanmeysman.artstation.com/blog/7goy/keeping-your-games-optimized-part-1-triangles)
+- [MoreVFX Academy — Niagara Optimization Guide](https://morevfxacademy.com/complete-guide-to-niagara-vfx-optimization-in-unreal-engine/)
+- [Georgy Prosser — Optimizing TWeakObjectPtr](https://prosser.io/optimizing-tweakobjectptr-usage/)
+- [Intax Blueprint Performance Guide](https://intaxwashere.github.io/blueprint-performance/)
+
+### Official Documentation (dev.epicgames.com)
+
+- [Unreal Insights](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-insights-in-unreal-engine)
+- [Memory Insights](https://dev.epicgames.com/documentation/en-us/unreal-engine/memory-insights-in-unreal-engine)
+- [Networking Insights](https://dev.epicgames.com/documentation/en-us/unreal-engine/networking-insights-in-unreal-engine)
+- [Visibility and Occlusion Culling](https://dev.epicgames.com/documentation/unreal-engine/visibility-and-occlusion-culling-in-unreal-engine)
+- [Tasks System in Unreal Engine](https://dev.epicgames.com/documentation/unreal-engine/tasks-systems-in-unreal-engine)
+- [Developer Guide to Tracing](https://dev.epicgames.com/documentation/en-us/unreal-engine/developer-guide-to-tracing-in-unreal-engine)
+- [Getting Started with Editor Utility Blueprints](https://dev.epicgames.com/community/learning/tutorials/owYv/unreal-engine-getting-started-with-editor-utility-blueprints)
+
+### YouTube Channels
+
+- [Ben Cloward](https://www.youtube.com/@BenCloward) — materials, HLSL, shader development
+- [William Faucher](https://www.youtube.com/@WilliamFaucher) — Lumen, lighting, cinematic rendering
+- [Tom Looman](https://www.youtube.com/@TomLoomanton) — C++, AI, gameplay systems in UE5
+- [Alex Forsythe](https://www.youtube.com/@AlexForsythe) — Blueprint vs C++, architecture
+
+### Repositories and Community References
+
+- [Awesome Unreal (GitHub)](https://github.com/insthync/awesome-unreal) — curated list of UE resources
+- [unrealcommunity.wiki](https://unrealcommunity.wiki) — community-maintained wiki with deep dives
+- [Epic Developer Community](https://dev.epicgames.com/community/) — official tutorials and Knowledge Base
+- [r/unrealengine](https://www.reddit.com/r/unrealengine/) — community Q&A and real-world experience sharing
+
+### Epic Forums and Knowledge Base
+
+- [Epic Forums — GC Clustering Internals](https://forums.unrealengine.com/t/knowledge-base-garbage-collector-internals/501800)
+- [Epic Forums — Why Use TObjectPtr?](https://forums.unrealengine.com/t/why-should-i-replace-raw-pointers-with-tobjectptr/232781)
+- [Epic Forums — Blueprint Nativization Removed](https://forums.unrealengine.com/t/why-was-blueprint-nativization-removed-no-code-preaching/232490)
+- [Epic Forums — Nanite VRAM Fallback Thread](https://forums.unrealengine.com/t/nanite-fallback-mesh-buffers-vram-residence/2563974)
+- [Epic Forums — When to Use Level Instance/PLA/ISM/HISM](https://forums.unrealengine.com/t/when-to-use-level-instance-packed-level-actor-or-ism-hism-in-ue5/2681508)
+- [Epic Forums — Iris Bandwidth Control (UE5.5)](https://forums.unrealengine.com/t/how-is-server-to-client-bandwidth-controlled-in-iris-in-ue-5-5/2675046)
+- [Epic Forums — Shader Permutations Knowledge Base](https://forums.unrealengine.com/t/knowledge-base-understanding-shader-permutations/264928)
+- [Epic Forums — OFPA Best Practices](https://forums.unrealengine.com/t/tips-and-best-practices-for-one-file-per-actor/837886)
+- [Epic Forums — Lumen Surface Cache Scale](https://forums.unrealengine.com/t/lumen-surface-cache-scale-woes/2669365)
