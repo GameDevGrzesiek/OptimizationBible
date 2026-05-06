@@ -14,7 +14,7 @@ I'm mostly interested in game optimization and porting, not very hot for mobile 
 Some of the notes are simple copies of guides, some are my own findings. Most of them have references or sources.
 These are not universal, not all of these might work in your project, but it's worth to try :P  
 
-If you find this and it's useful to you - find me on social media, follow, like my content on LinkedIn or YouTube, do some shoutout - whatever you're comfortable with:  
+If you think it's useful to you - find me on social media, follow, like my content on LinkedIn or YouTube, do some shoutout - whatever you're comfortable with:  
 
 https://www.youtube.com/@okiemdeva  
 https://x.com/gamedevgrzesiek  
@@ -32,8 +32,8 @@ OR
 Wishlist my new game (and buy it, maybe when it's released... ?)  
 https://store.steampowered.com/app/4184130/Foxy_Dumplings/
 
-If you find any mistake, if you think I'm wrong or something is not correct in any sense - write to me.
-If you want to share some tips of your own - let me know I will, of course, credit your contribution!
+If you'll find any mistake, if you think I'm wrong or something is not correct in any sense - write to me.
+If you want to share some tips of your own - let me know, and I will, of course, credit your contribution!
 
 Contact me here:  
 <watroba.grzegorz@gmail.com>  
