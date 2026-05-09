@@ -160,7 +160,7 @@ Install `com.unity.build-report-inspector`. Open via **Assets → Open Last Buil
 - Asset breakdown by size in final build — find the 200 MB texture that slipped in
 - Scene object summary and managed stripping information
 
-**Build Profiles** (Unity 2023.1+): Named build configurations that persist platform, scenes, and Player Settings overrides. Replaces manual per-platform Build Settings workflow. [QA/Build section for details](#qa--build--production)
+**Build Profiles** (Unity 2023.1+): Named build configurations that persist platform, scenes, and Player Settings overrides. Replaces manual per-platform Build Settings workflow. [QA/Build section for details](#qabuild-section-for-details)
 
 ### Profile in a Player Build, Not the Editor **[All versions]**
 

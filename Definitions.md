@@ -17,12 +17,12 @@ A unified reference combining engine-agnostic rendering and performance vocabula
   - [Shader](#shader)
   - [CPU Bound vs GPU Bound](#cpu-bound-vs-gpu-bound)
   - [Inclusive Time vs Exclusive Time](#inclusive-time-vs-exclusive-time)
-  - [Rendering Pipeline (Forward / Deferred)](#rendering-pipeline-forward-deferred)
+  - [Rendering Pipeline (Forward / Deferred)](#rendering-pipeline-forward--deferred)
   - [Rasterization](#rasterization)
   - [Ray Tracing](#ray-tracing)
   - [Material](#material)
   - [Material Instance](#material-instance)
-  - [Material Pass / Material Domain](#material-pass-material-domain)
+  - [Material Pass / Material Domain](#material-pass--material-domain)
   - [LOD (Level of Detail)](#lod-level-of-detail)
   - [Occlusion Culling](#occlusion-culling)
   - [Light Probes](#light-probes)
@@ -31,14 +31,14 @@ A unified reference combining engine-agnostic rendering and performance vocabula
   - [Mixed Lighting](#mixed-lighting)
   - [Shadow Mapping](#shadow-mapping)
   - [Antialiasing](#antialiasing)
-  - [DLSS / FSR / XeSS](#dlss-fsr-xess)
+  - [DLSS / FSR / XeSS](#dlss--fsr--xess)
   - [Ambient Occlusion](#ambient-occlusion)
   - [Depth of Field](#depth-of-field)
   - [Anisotropy](#anisotropy)
   - [Volumetric Effects](#volumetric-effects)
   - [Checkerboarding](#checkerboarding)
   - [Anti-Tearing Techniques (V-Sync, G-Sync, FreeSync)](#anti-tearing-techniques-v-sync-g-sync-freesync)
-- [Unreal Engine 4 / UE5 Glossary](#unreal-engine-4-ue5-glossary)
+- [Unreal Engine 4 / UE5 Glossary](#unreal-engine-4--ue5-glossary)
   - [TSR (Temporal Super Resolution)](#tsr-temporal-super-resolution)
   - [Lumen](#lumen)
   - [Nanite](#nanite)
@@ -54,7 +54,7 @@ A unified reference combining engine-agnostic rendering and performance vocabula
   - [Iris](#iris)
   - [Push Model Replication](#push-model-replication)
   - [Subsystems](#subsystems)
-  - [TSoftObjectPtr / TSoftClassPtr](#tsoftobjectptr-tsoftclassptr)
+  - [TSoftObjectPtr / TSoftClassPtr](#tsoftobjectptr--tsoftclassptr)
   - [TObjectPtr](#tobjectptr)
   - [TWeakObjectPtr](#tweakobjectptr)
   - [Live Coding](#live-coding)
@@ -62,7 +62,7 @@ A unified reference combining engine-agnostic rendering and performance vocabula
   - [Built-in RP](#built-in-rp)
   - [URP (Universal Render Pipeline)](#urp-universal-render-pipeline)
   - [HDRP (High Definition Render Pipeline)](#hdrp-high-definition-render-pipeline)
-  - [Forward / Forward+ / Deferred (Unity)](#forward-forward-deferred-unity)
+  - [Forward / Forward+ / Deferred (Unity)](#forward--forward--deferred-unity)
   - [SRP Batcher](#srp-batcher)
   - [GPU Instancing (Unity)](#gpu-instancing-unity)
   - [Static Batching (Unity)](#static-batching-unity)
@@ -77,8 +77,8 @@ A unified reference combining engine-agnostic rendering and performance vocabula
   - [Shader Graph](#shader-graph)
   - [Burst](#burst)
   - [Job System](#job-system)
-  - [IJob / IJobParallelFor](#ijob-ijobparallelfor)
-  - [DOTS / ECS](#dots-ecs)
+  - [IJob / IJobParallelFor](#ijob--ijobparallelfor)
+  - [DOTS / ECS](#dots--ecs)
   - [Entities Graphics](#entities-graphics)
   - [IL2CPP vs Mono](#il2cpp-vs-mono)
   - [Awaitable](#awaitable)
@@ -168,7 +168,7 @@ Sort profiler timers by Exclusive Time (Unreal Insights, Unity Profiler hierarch
 
 Engine specifics:
 - **Unreal:** UE5 defaults to Deferred. Forward Rendering is available for VR or mobile. Nanite, Lumen, and VSM require Deferred.
-- **Unity:** see [Forward / Forward+ / Deferred (Unity)](#forward--forward--deferred-unity) for URP rendering paths, and [HDRP](#hdrp-high-definition-render-pipeline) for the high-fidelity deferred-by-default option.
+- **Unity:** see [Forward / Forward+ / Deferred (Unity)](#forward-forward-deferred-unity) for URP rendering paths, and [HDRP](#hdrp) for the high-fidelity deferred-by-default option.
 
 ### Rasterization
 **[Universal]**
@@ -215,7 +215,7 @@ A visibility system preventing draw calls for fully occluded objects.
 **[Universal]**
 Spherical Harmonics captures at discrete world positions used to light dynamic objects at runtime. Sampled per-object, not per-pixel.
 - **Unreal:** Indirect Lighting Cache and (in UE5) volumetric lightmaps; the Lumen path largely supersedes manual probe placement in lit dynamic scenes.
-- **Unity:** Placed manually via `Light Probe Group` components, or automatically via [APV](#apv-adaptive-probe-volumes) in Unity 6+ (per-pixel sampling).
+- **Unity:** Placed manually via `Light Probe Group` components, or automatically via [APV](#apv) in Unity 6+ (per-pixel sampling).
 
 ### Reflection Probes
 **[Universal]**
@@ -236,7 +236,7 @@ Lights that combine real-time direct lighting with baked indirect.
 ### Shadow Mapping
 **[Universal]**
 Classic depth-map shadow technique.
-- **Unreal:** UE4 (and UE5 without Lumen) uses Cascaded Shadow Maps (CSM) for directional lights. Shadow map resolution, cascade count, and cascade transition distances are primary tuning parameters. UE5 with Lumen uses [VSM](#virtual-shadow-maps-vsm) for dynamic lights.
+- **Unreal:** UE4 (and UE5 without Lumen) uses Cascaded Shadow Maps (CSM) for directional lights. Shadow map resolution, cascade count, and cascade transition distances are primary tuning parameters. UE5 with Lumen uses [VSM](#vsm) for dynamic lights.
 - **Unity:** Cascaded shadow maps for directional lights (configured per render pipeline asset). Shadow distance, cascade count (1/2/4), and shadow resolution are primary tuning parameters.
 
 ### Antialiasing
@@ -245,7 +245,7 @@ Technique to reduce jagged edges along high-contrast geometry boundaries.
 - **MSAA** — multisample, forward-only, expensive.
 - **FXAA / SMAA** — cheap post-process; soft, can blur detail.
 - **TAA** — temporal accumulation; can ghost.
-- **TSR / DLSS / FSR / XeSS / STP** — temporal upscalers that double as AA solutions; see [DLSS / FSR / XeSS](#dlss--fsr--xess) and the engine-specific entries.
+- **TSR / DLSS / FSR / XeSS / STP** — temporal upscalers that double as AA solutions; see [DLSS / FSR / XeSS](#dlss-fsr-xess) and the engine-specific entries.
 
 ### DLSS / FSR / XeSS
 **[Universal]**
@@ -254,7 +254,7 @@ Vendor (or vendor-aligned) temporal upscalers. All three function as replacement
 - **FSR** — AMD, hardware-agnostic. FSR 3+ includes Frame Generation. Most compatible cross-vendor option.
 - **XeSS** — Intel; quality-for-cost between FSR and DLSS on Arc and recent NVIDIA cards.
 - **Unreal:** ship as plugins in Marketplace / Fab; install per-vendor. DLSS Frame Generation requires DLSS 3+ and RTX 40+ series.
-- **Unity:** DLSS native in HDRP, plugin in URP. FSR built into URP since 2022. XeSS via the [open-source plugin](https://github.com/GameTechDev/XeSSUnityPlugin). For most indie PC games, [STP](#stp-spatial-temporal-post-processing) (Unity 6+) is the simpler default.
+- **Unity:** DLSS native in HDRP, plugin in URP. FSR built into URP since 2022. XeSS via the [open-source plugin](https://github.com/GameTechDev/XeSSUnityPlugin). For most indie PC games, [STP](#stp) (Unity 6+) is the simpler default.
 
 ### Ambient Occlusion
 **[Universal]**
@@ -295,7 +295,7 @@ Rendering alternating pixels on alternating frames and reconstructing a full ima
 
 ## Unreal Engine 4 / UE5 Glossary
 
-This section covers terms specific to Unreal Engine 4 and Unreal Engine 5. Engine-agnostic concepts (CPU, GPU, Draw Call, LOD, Material, etc.) live in the [Common Glossary](#common-glossary-engine-agnostic) above with UE-specific notes inline.
+This section covers terms specific to Unreal Engine 4 and Unreal Engine 5. Engine-agnostic concepts (CPU, GPU, Draw Call, LOD, Material, etc.) live in the [Common Glossary](#common-glossary) above with UE-specific notes inline.
 
 ### TSR (Temporal Super Resolution)
 **[UE5 only]**
@@ -378,7 +378,7 @@ Hot-patch compilation that recompiles and relinks function bodies in a running e
 
 ## Unity Glossary
 
-This section covers terms specific to Unity. Engine-agnostic concepts live in the [Common Glossary](#common-glossary-engine-agnostic) above with Unity-specific notes inline.
+This section covers terms specific to Unity. Engine-agnostic concepts live in the [Common Glossary](#common-glossary) above with Unity-specific notes inline.
 
 ### Built-in RP
 **[Pre-2020 default; deprecated Unity 6.5]**
