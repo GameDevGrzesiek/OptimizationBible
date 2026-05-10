@@ -17,7 +17,7 @@ Unity's SRP Batcher is conceptually similar to UE's PSO caching in that both aim
 
 ---
 
-## Glossary  
+## Glossary
 
 You can find it [HERE](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/Definitions.md)
 
@@ -78,12 +78,12 @@ You can find them [HERE](https://github.com/GameDevGrzesiek/OptimizationBible/bl
   - [Quality Scalability Recommendations](#quality-scalability-recommendations)
   - [Physics Project Settings Reference](#physics-project-settings-reference)
   - [Audio Project Settings Reference](#audio-project-settings-reference)
-  - [Editor Performance Settings Reference [All versions]](#editor-performance-settings-reference-all-versions)
+  - [Editor Performance Settings Reference (All versions)](#editor-performance-settings-reference-all-versions)
 - [Unity ↔ UE Concept Bridge](#unity--ue-concept-bridge)
 - [Version Migration Notes](#version-migration-notes)
-  - [Migrating from Built-in RP to URP [Pre-2020] → [2020-2022 LTS]](#migrating-from-built-in-rp-to-urp-pre-2020-2020-2022-lts)
-  - [Migrating from Unity 2020/2021 to Unity 2022 LTS [2020-2022 LTS era internal]](#migrating-from-unity-20202021-to-unity-2022-lts-2020-2022-lts-era-internal)
-  - [Migrating to Unity 6 [2020-2022 LTS] → [Unity 6+]](#migrating-to-unity-6-2020-2022-lts-unity-6)
+  - [Migrating from Built-in RP to URP (Pre-2020) to (2020-2022 LTS)](#migrating-from-built-in-rp-to-urp-pre-2020-to-2020-2022-lts)
+  - [Migrating from Unity 2020/2021 to Unity 2022 LTS (2020-2022 LTS era internal)](#migrating-from-unity-20202021-to-unity-2022-lts-2020-2022-lts-era-internal)
+  - [Migrating to Unity 6 (2020-2022 LTS) to (Unity 6+)](#migrating-to-unity-6-2020-2022-lts-to-unity-6)
   - [Performance Regressions to Watch After Unity Version Upgrades](#performance-regressions-to-watch-after-unity-version-upgrades)
 - [Bibliography and Further Reading](#bibliography-and-further-reading)
   - [Official Documentation](#official-documentation)
@@ -1631,7 +1631,7 @@ All effects On
 | Spatializer Plugin | Project Settings → Audio | Built-in (default); Steam Audio for physics-based occlusion |
 | Sample Rate | Project Settings → Audio | 44100 Hz default; 22050 Hz acceptable for most game SFX |
 
-### Editor Performance Settings Reference **[All versions]**
+### Editor Performance Settings Reference **(All versions)**
 
 These settings have zero shipping build impact but dramatically affect daily iteration speed:
 
@@ -1676,7 +1676,7 @@ This guide's companion document is the UE4/UE5 Optimization Guide. If you use bo
 
 For teams moving between major Unity versions, these are the performance-impacting breaking changes that most commonly cause regressions.
 
-### Migrating from Built-in RP to URP **[Pre-2020] → [2020-2022 LTS]**
+### Migrating from Built-in RP to URP **(Pre-2020) to (2020-2022 LTS)**
 
 This is the highest-impact migration in Unity's history for most indie teams.
 
@@ -1688,14 +1688,14 @@ This is the highest-impact migration in Unity's history for most indie teams.
 - **GPU Instancing vs SRP Batcher**: You cannot use both simultaneously on the same renderer. Decide per use case: SRP Batcher for heterogeneous static scenes; GPU Instancing for thousands of identical dynamic objects.
 - Reference: [Migrating from Built-in RP to URP](https://docs.unity.cn/6000.6/Documentation/Manual/urp/upgrading-from-birp.html)
 
-### Migrating from Unity 2020/2021 to Unity 2022 LTS **[2020-2022 LTS era internal]**
+### Migrating from Unity 2020/2021 to Unity 2022 LTS **(2020-2022 LTS era internal)**
 
 - **DOTS Entities 1.0** was released for Unity 2022.2. The entire ECS API changed: `Entities.ForEach` deprecated, `ISystem` introduced, baking system replaced conversion workflow. ECS projects from Unity 2020/2021 require significant migration. [DOTS migration guide](https://docs.unity3d.com/Packages/com.unity.entities@1.0/manual/)
 - **UI Toolkit** became production-ready for runtime UIs in Unity 2022 LTS. The IMGUI backend no longer receives feature investment for runtime UI. Toolkit-based UIs in 2020/2021 may need API updates.
 - **GraphicsFormat API** changed for some render texture formats between 2021 and 2022. RenderTexture creation using deprecated format enums will produce console warnings.
 - **Hybrid Renderer V2 renamed to Entities Graphics** (`com.unity.entities.graphics`). The package name changed; update `manifest.json`.
 
-### Migrating to Unity 6 **[2020-2022 LTS] → [Unity 6+]**
+### Migrating to Unity 6 **(2020-2022 LTS) to (Unity 6+)**
 
 - **Render Graph is mandatory in URP.** All `ScriptableRenderPass.Execute()` overrides must be migrated to `RecordRenderGraph()`. Unity 6.0 ships a compatibility mode (`Compatibility Mode` toggle in the Universal Renderer asset) that keeps old code working, but it is removed in a later release. Migrate immediately. [Render Graph introduction](https://docs.unity3d.com/6000.3/Documentation/Manual/urp/render-graph-introduction.html)
 - **GPU Resident Drawer** is opt-in in URP, on-by-default in HDRP. If Static Batching was your primary batching strategy, disable it and switch to GRD for GPU-side instancing.

@@ -19,11 +19,11 @@ This guide covers Unreal Engine 4 (4.22–4.27) and Unreal Engine 5 (5.0–5.6+)
 
 - [How to Read This Guide](#how-to-read-this-guide)
 - [Tools](#tools)
-  - [Console / stat Commands [UE4 + UE5]](#console-stat-commands-ue4-ue5)
-  - [View Modes [UE4 + UE5]](#view-modes-ue4-ue5)
-  - [Unreal Engine Profiler (Session Frontend) [UE4 + UE5 — Legacy]](#unreal-engine-profiler-session-frontend-ue4-ue5-legacy)
-  - [GPU Visualizer [UE4 + UE5]](#gpu-visualizer-ue4-ue5)
-  - [Unreal Insights [UE4.21+, primary tool in UE5]](#unreal-insights-ue421-primary-tool-in-ue5)
+  - [Console / stat Commands (UE4 + UE5)](#console-stat-commands-ue4-ue5)
+  - [View Modes (UE4 + UE5)](#view-modes-ue4-ue5)
+  - [Unreal Engine Profiler (Session Frontend) (UE4 + UE5 — Legacy)](#unreal-engine-profiler-session-frontend-ue4-ue5-legacy)
+  - [GPU Visualizer (UE4 + UE5)](#gpu-visualizer-ue4-ue5)
+  - [Unreal Insights (UE4.21+, primary tool in UE5)](#unreal-insights-ue421-primary-tool-in-ue5)
     - [Setting Up: Server, Client, Trace Files](#setting-up-server-client-trace-files)
       - [UnrealTraceServer, Ports, and Network Captures](#unrealtraceserver-ports-and-network-captures)
       - [File Location, Retention, and On-Disk Size](#file-location-retention-and-on-disk-size)
@@ -102,19 +102,19 @@ This guide covers Unreal Engine 4 (4.22–4.27) and Unreal Engine 5 (5.0–5.6+)
       - [Key Console Commands](#key-console-commands)
       - [Instrumentation Macro Cheat Sheet](#instrumentation-macro-cheat-sheet)
       - [Build Configuration Profiling Capability](#build-configuration-profiling-capability)
-  - [CSVtoSVG Tool [UE4 + UE5]](#csvtosvg-tool-ue4-ue5)
-  - [RenderDoc / PIX / NSight [UE4 + UE5]](#renderdoc-pix-nsight-ue4-ue5)
-  - [Build Configurations [UE4 + UE5]](#build-configurations-ue4-ue5)
-  - [LLM (Low-Level Memory Tracker) [UE4.20+ expanded in UE5]](#llm-low-level-memory-tracker-ue420-expanded-in-ue5)
+  - [CSVtoSVG Tool (UE4 + UE5)](#csvtosvg-tool-ue4-ue5)
+  - [RenderDoc / PIX / NSight (UE4 + UE5)](#renderdoc-pix-nsight-ue4-ue5)
+  - [Build Configurations (UE4 + UE5)](#build-configurations-ue4-ue5)
+  - [LLM (Low-Level Memory Tracker) (UE4.20+ expanded in UE5)](#llm-low-level-memory-tracker-ue420-expanded-in-ue5)
 - [Prerequisites for Checkups](#prerequisites-for-checkups)
-- [Basic Checkup List [UE4 + UE5]](#basic-checkup-list-ue4-ue5)
-- [Advanced Checkup List [UE4 + UE5]](#advanced-checkup-list-ue4-ue5)
+- [Basic Checkup List (UE4 + UE5)](#basic-checkup-list-ue4-ue5)
+- [Advanced Checkup List (UE4 + UE5)](#advanced-checkup-list-ue4-ue5)
 
 ---
 
 ## Tools
 
-### Console / `stat` Commands **[UE4 + UE5]**
+### Console / `stat` Commands **(UE4 + UE5)**
 
 Always run `stat unit` first. It tells you which thread is over budget.
 
@@ -159,7 +159,7 @@ show ShaderComplexity
 
 ---
 
-### View Modes **[UE4 + UE5]**
+### View Modes **(UE4 + UE5)**
 
 Access via the Viewport dropdown (Lit → select mode) or the `viewmode` console command.
 
@@ -182,13 +182,13 @@ Access via the Viewport dropdown (Lit → select mode) or the `viewmode` console
 
 ---
 
-### Unreal Engine Profiler (Session Frontend) **[UE4 + UE5 — Legacy]**
+### Unreal Engine Profiler (Session Frontend) **(UE4 + UE5 — Legacy)**
 
 The Session Frontend (`Window > Developer Tools > Session Frontend`) includes a CPU profiler with flame graph, stat capture, and remote session support. In UE5 this tool is superseded by Unreal Insights and receives minimal development. The Session Frontend profiler requires a networked editor session; it cannot profile standalone packaged builds. Use it only if Insights is unavailable or for quick in-editor investigations. For any serious performance work, use Unreal Insights.
 
 ---
 
-### GPU Visualizer **[UE4 + UE5]**
+### GPU Visualizer **(UE4 + UE5)**
 
 Open with `ProfileGPU` console command or `Ctrl+Shift+,`. Displays GPU time per render pass in a hierarchical tree. Key passes to examine:
 
@@ -210,7 +210,7 @@ For capture-level debugging, enable the **RenderDoc** plugin (restart required),
 
 ---
 
-### Unreal Insights **[UE4.21+, primary tool in UE5]**
+### Unreal Insights **(UE4.21+, primary tool in UE5)**
 Unreal Insights is not just a viewer for frame times. It is a post-mortem analysis system built on a streaming binary protocol called Trace, which records structured events into `.utrace` files that can be analyzed offline or in real time. Unlike the classic `stat` system — which paints numbers onto the viewport and is limited to Development builds — Insights is available in every configuration including Test, and can be enabled in Shipping with a single define. For an indie team shipping on Steam, that distinction matters enormously: your published build and your profiling build can be nearly identical.
 
 The architecture separates concerns cleanly. A lightweight runtime component (TraceLog) emits binary events over a TCP connection or directly to disk with minimal overhead. A separate process, `UnrealTraceServer`, records and stores those events. The Insights frontend application reads stored sessions and renders the analysis UI. This means your game instance, your profiling data store, and your analysis tool can all run on different machines — critical for headless server profiling in CI/CD pipelines.
@@ -997,13 +997,13 @@ stat namedevents           — enable named events at runtime
 
 ---
 
-### CSVtoSVG Tool **[UE4 + UE5]**
+### CSVtoSVG Tool **(UE4 + UE5)**
 
 Epic's `CSVtoSVG` tool converts CSV profiling output (from `-csvprofile` or Gauntlet automation) into SVG charts. Useful for regression tracking across builds in CI pipelines. Located in `Engine/Programs/CSVTools/`.
 
 ---
 
-### RenderDoc / PIX / NSight **[UE4 + UE5]**
+### RenderDoc / PIX / NSight **(UE4 + UE5)**
 
 Enable RenderDoc via Plugins > RenderDoc. Restart editor. A toolbar button appears for frame capture. Inside RenderDoc:
 - Inspect per-draw-call shader source, resource bindings, and output
@@ -1014,7 +1014,7 @@ When capturing with D3D12, set `r.ShowMaterialDrawEvents 0` before capture to el
 
 ---
 
-### Build Configurations **[UE4 + UE5]**
+### Build Configurations **(UE4 + UE5)**
 
 | Config | Optimization | Logging | Profiling | Use For |
 |---|---|---|---|---|
@@ -1036,7 +1036,7 @@ if (Target.Configuration == UnrealTargetConfiguration.Test)
 
 ---
 
-### LLM (Low-Level Memory Tracker) **[UE4.20+ expanded in UE5]**
+### LLM (Low-Level Memory Tracker) **(UE4.20+ expanded in UE5)**
 
 LLM tracks memory at the allocation level, categorized by LLM tags. Enable with `-LLM` on launch. View in Insights (memtag channel) or via `stat LLM` overlay. Define custom tags in C++:
 ```cpp
@@ -1062,7 +1062,7 @@ Before profiling:
 
 ---
 
-## Basic Checkup List **[UE4 + UE5]**
+## Basic Checkup List **(UE4 + UE5)**
 
 1. Run `stat unit` in a representative play session. Identify the bottleneck thread (Game, Draw, GPU, RHIT).
 2. If GPU-bound: run `ProfileGPU`. Find the most expensive passes. Use View Modes (Shader Complexity, Nanite Overdraw, VSM Visualization) to localize.
@@ -1071,7 +1071,7 @@ Before profiling:
 
 ---
 
-## Advanced Checkup List **[UE4 + UE5]**
+## Advanced Checkup List **(UE4 + UE5)**
 
 1. **Baseline capture.** Test build, `stat unit` stable, Insights trace running (`cpu,frame,gpu,bookmark`).
 2. **Identify the stack.** Use `stat unit` → Insights flame graph → ProfileGPU in that order. Never jump directly to GPU tooling if the Game Thread is the bottleneck.

@@ -21,18 +21,18 @@ Unity's SRP Batcher is conceptually similar to UE's PSO caching in that both aim
 
 - [How to Read This Guide](#how-to-read-this-guide)
 - [Tools](#tools)
-  - [Built-in Profiler [All versions]](#built-in-profiler-all-versions)
-  - [Frame Debugger [All versions]](#frame-debugger-all-versions)
-  - [Memory Profiler Package [2020-2022 LTS] (com.unity.memoryprofiler, from Unity 2018.3)](#memory-profiler-package-2020-2022-lts-comunitymemoryprofiler-from-unity-20183)
-  - [Profile Analyzer Package [2020-2022 LTS] (com.unity.performance.profile-analyzer, from 2019)](#profile-analyzer-package-2020-2022-lts-comunityperformanceprofile-analyzer-from-2019)
-  - [Deep Profile Mode [All versions]](#deep-profile-mode-all-versions)
-  - [Custom Profiler Markers [All versions]](#custom-profiler-markers-all-versions)
-  - [Standalone Profiler [Unity 6+] (available 2022.2+)](#standalone-profiler-unity-6-available-20222)
-  - [Connecting to a Player Build (Remote Profiling) [All versions]](#connecting-to-a-player-build-remote-profiling-all-versions)
-  - [RenderDoc / PIX / NSight [All versions]](#renderdoc-pix-nsight-all-versions)
-  - [Build Report Inspector / Build Profiles [2020-2022 LTS] (introduced Unity 2022.2)](#build-report-inspector-build-profiles-2020-2022-lts-introduced-unity-20222)
-  - [Profile in a Player Build, Not the Editor [All versions]](#profile-in-a-player-build-not-the-editor-all-versions)
-  - [Editor Iteration Settings — Domain and Scene Reload [Unity 2019.3+]](#editor-iteration-settings-domain-and-scene-reload-unity-20193)
+  - [Built-in Profiler (All versions)](#built-in-profiler-all-versions)
+  - [Frame Debugger (All versions)](#frame-debugger-all-versions)
+  - [Memory Profiler Package (2020-2022 LTS) (com.unity.memoryprofiler, from Unity 2018.3)](#memory-profiler-package-2020-2022-lts-comunitymemoryprofiler-from-unity-20183)
+  - [Profile Analyzer Package (2020-2022 LTS) (com.unity.performance.profile-analyzer, from 2019)](#profile-analyzer-package-2020-2022-lts-comunityperformanceprofile-analyzer-from-2019)
+  - [Deep Profile Mode (All versions)](#deep-profile-mode-all-versions)
+  - [Custom Profiler Markers (All versions)](#custom-profiler-markers-all-versions)
+  - [Standalone Profiler (Unity 6+) (available 2022.2+)](#standalone-profiler-unity-6-available-20222)
+  - [Connecting to a Player Build (Remote Profiling) (All versions)](#connecting-to-a-player-build-remote-profiling-all-versions)
+  - [RenderDoc / PIX / NSight (All versions)](#renderdoc-pix-nsight-all-versions)
+  - [Build Report Inspector / Build Profiles (2020-2022 LTS) (introduced Unity 2022.2)](#build-report-inspector-build-profiles-2020-2022-lts-introduced-unity-20222)
+  - [Profile in a Player Build, Not the Editor (All versions)](#profile-in-a-player-build-not-the-editor-all-versions)
+  - [Editor Iteration Settings — Domain and Scene Reload (Unity 2019.3+)](#editor-iteration-settings-domain-and-scene-reload-unity-20193)
 - [Prerequisites for Checkups](#prerequisites-for-checkups)
 - [Basic Checkup List](#basic-checkup-list)
 - [Advanced Checkup List](#advanced-checkup-list)
@@ -49,7 +49,7 @@ Unity's SRP Batcher is conceptually similar to UE's PSO caching in that both aim
 
 ## Tools
 
-### Built-in Profiler **[All versions]**
+### Built-in Profiler **(All versions)**
 
 The Unity Profiler (`Window → Analysis → Profiler`, `Ctrl+7`) is the primary diagnostic tool. [Unity Profiler docs](https://docs.unity3d.com/Manual/Profiler.html)
 
@@ -73,7 +73,7 @@ The three "wait" markers you must distinguish:
 
 Call `Profiler.SetAreaEnabled` in code to disable noisy modules (Rendering, Audio, Physics) and narrow capture data.
 
-### Frame Debugger **[All versions]**
+### Frame Debugger **(All versions)**
 
 `Window → Analysis → Frame Debugger` freezes on a single frame and displays every rendering event in sequence. Step through draw calls to see which mesh/material/shader was used, where the SRP Batcher created or broke batches, and render target state. [Unity Frame Debugger docs](https://docs.unity3d.com/Manual/frame-debugger-window.html)
 
@@ -85,7 +85,7 @@ Call `Profiler.SetAreaEnabled` in code to disable noisy modules (Rendering, Audi
 
 Attach to a standalone Development Build via the Target Selector dropdown for production-accurate data.
 
-### Memory Profiler Package **[2020-2022 LTS]** (com.unity.memoryprofiler, from Unity 2018.3)
+### Memory Profiler Package **(2020-2022 LTS)** (com.unity.memoryprofiler, from Unity 2018.3)
 
 Install via Package Manager. Snapshot-based memory analysis of the entire managed heap, native allocations, Unity object references, and texture/mesh residency. [Memory Profiler docs](https://docs.unity3d.com/Packages/com.unity.memoryprofiler@1.1/manual/index.html)
 
@@ -96,17 +96,17 @@ Install via Package Manager. Snapshot-based memory analysis of the entire manage
 
 Always snapshot in the player build, not the Editor. Compare snapshot at game start vs. after 20 minutes to identify gradual leaks.
 
-### Profile Analyzer Package **[2020-2022 LTS]** (com.unity.performance.profile-analyzer, from 2019)
+### Profile Analyzer Package **(2020-2022 LTS)** (com.unity.performance.profile-analyzer, from 2019)
 
 Aggregates data from a set of Profiler frames and computes statistics (median, mean, 99th percentile) per marker. **Compare mode** is the key feature: load two `.pdata` files side-by-side to validate whether an optimization changed median frame time for specific markers. [Profile Analyzer docs](https://docs.unity3d.com/Packages/com.unity.performance.profile-analyzer@1.2/manual/index.html)
 
 Use it to confirm a LOD tweak actually reduced `Camera.Render` across 300 frames, not just one lucky frame.
 
-### Deep Profile Mode **[All versions]**
+### Deep Profile Mode **(All versions)**
 
 Instruments every C# method call, not just `ProfilerMarker` scopes. Provides complete call stacks at the cost of 10×–100× frame time inflation. Use only for short (2–5 second) targeted captures after identifying the suspect system. Manual `ProfilerMarker`s are far less disruptive for narrow investigations.
 
-### Custom Profiler Markers **[All versions]**
+### Custom Profiler Markers **(All versions)**
 
 ```csharp
 // Modern zero-overhead approach — recommended
@@ -131,11 +131,11 @@ Profiler.EndSample();
 
 **Profiling Core API** `[2020-2022 LTS]` — `com.unity.profiling.core` provides `ProfilerCounter<T>` for custom numeric metrics (enemy count, active particle systems) visible in the Profiler window. [ProfilerCounter docs](https://docs.unity3d.com/Packages/com.unity.profiling.core@1.0/manual/profilercounter-guide.html)
 
-### Standalone Profiler **[Unity 6+]** (available 2022.2+)
+### Standalone Profiler **(Unity 6+)** (available 2022.2+)
 
 Launches the Profiler as a separate OS process, isolated from the Unity Editor. Most useful when profiling the Editor itself as the target or using Deep Profile on the Editor without the Profiler window contaminating the data. [Unity Standalone Profiler docs](https://docs.unity3d.com/6000.4/Documentation/Manual/profiler-standalone-process.html)
 
-### Connecting to a Player Build (Remote Profiling) **[All versions]**
+### Connecting to a Player Build (Remote Profiling) **(All versions)**
 
 1. Enable **Development Build** and **Autoconnect Profiler** in Build Settings.
 2. Build & Run — the player launches and auto-connects to the Profiler window.
@@ -143,7 +143,7 @@ Launches the Profiler as a separate OS process, isolated from the Unity Editor. 
 4. Firewall: open UDP/TCP ports **54998–55511**.
 5. For startup analysis: enable **Deep Profiling Support** in Build Settings. [Unity profiling applications docs](https://docs.unity3d.com/2022.3/Documentation/Manual/profiler-profiling-applications.html)
 
-### RenderDoc / PIX / NSight **[All versions]**
+### RenderDoc / PIX / NSight **(All versions)**
 
 **RenderDoc** (free): Built-in Unity integration via right-click on Game View → Load RenderDoc. Captures full frame state: draw calls, textures, buffers, render targets. Indispensable for visual rendering artifacts and SRP pass order verification. Add `#pragma enable_d3d11_debug_symbols` for shader debugging. [Unity RenderDoc docs](https://docs.unity3d.com/2017.1/Documentation/Manual/RenderDocIntegration.html)
 
@@ -153,7 +153,7 @@ Launches the Profiler as a separate OS process, isolated from the Unity Editor. 
 
 Note: Unity's GPU Profiler module is disabled when Graphics Jobs are enabled — use vendor tools for GPU timings in that configuration.
 
-### Build Report Inspector / Build Profiles **[2020-2022 LTS]** (introduced Unity 2022.2)
+### Build Report Inspector / Build Profiles **(2020-2022 LTS)** (introduced Unity 2022.2)
 
 Install `com.unity.build-report-inspector`. Open via **Assets → Open Last Build Report**. Shows:
 - Build step timings (which step is slowest: shader compilation, texture compression?)
@@ -162,13 +162,13 @@ Install `com.unity.build-report-inspector`. Open via **Assets → Open Last Buil
 
 **Build Profiles** (Unity 2023.1+): Named build configurations that persist platform, scenes, and Player Settings overrides. Replaces manual per-platform Build Settings workflow. [QA/Build section for details](#qabuild-section-for-details)
 
-### Profile in a Player Build, Not the Editor **[All versions]**
+### Profile in a Player Build, Not the Editor **(All versions)**
 
 Profiling in Editor Play mode inflates all timings: the Editor's own rendering, asset database operations, and `EditorLoop` all run in-process. `GC.Alloc` counts are elevated by Editor infrastructure. Driver heuristics may behave differently. Relative timings under Deep Profile become meaningless.
 
 **Rule:** Identify candidate problems in editor Play mode, then validate every timing decision against a Development Build player on target hardware. This rule applies especially to GC allocation counts, shader compile stutter, and GPU timing. [Unity profiling applications docs](https://docs.unity3d.com/2022.3/Documentation/Manual/profiler-profiling-applications.html)
 
-### Editor Iteration Settings — Domain and Scene Reload **[Unity 2019.3+]**
+### Editor Iteration Settings — Domain and Scene Reload **(Unity 2019.3+)**
 
 In **Project Settings → Editor → Enter Play Mode Settings**:
 - **Disable Domain Reload**: Skip AppDomain reinitialization on Play. Saves 5–30 seconds per play press on large projects. Requires static field initialization via `[RuntimeInitializeOnLoadMethod]` or explicit `Awake()`/`Start()`.
