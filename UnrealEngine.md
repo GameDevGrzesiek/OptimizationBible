@@ -290,9 +290,9 @@ Every Blueprint node is a bytecode instruction interpreted by the VM. The VM ove
 **Common pitfalls:**
 
 - **Tick enabled on every actor by default** — "Start with Tick Enabled" is checked by default. 200 actors with empty ticks = 200 per-frame VM dispatches. Uncheck in Class Defaults for every actor that doesn't need per-frame updates.
-- **`Get All Actors Of Class` called in Tick or frequently** — iterates the entire World actor list, building a new `TArray` on every call. Catastrophically expensive. Use a manager/subsystem registration pattern instead.
+- **`Get All Actors Of Class` called in Tick or frequently** — iterates the entire World actor list, building a new `TArray` on every call. Catastrophically expensive. Use a manager/subsystem registration pattern or an octree instead (see the [detailed analysis](#get-all-actors-of-class--detailed-analysis-ue4--ue5)). Of the whole `Get All Actors...` family, **`Get All Actors With Interface` is the worst** — it not only iterates all actors, but for each actor it also iterates all classes it inherits from to check whether it implements the interface. *(contributed by [Urszula Kustra](https://www.linkedin.com/in/urszula-kustra/))*
 - **Hard reference casts everywhere** — `Cast To BP_PlayerCharacter` placed in a UI widget loads the entire player character class (and every asset it references) into memory when the widget loads. One stray cast can add hundreds of MB of unexpected memory.
-- **Pure functions wired to multiple nodes** — a pure function (green node, no exec pin) re-evaluates for every output consumer. Expensive computation wired to 3 nodes runs 3 times. Convert to impure (non-pure) and cache the result.
+- **Pure functions wired to multiple nodes** — a pure function (green node, no exec pin) re-evaluates for every output consumer. Expensive computation wired to 3 nodes runs 3 times. Convert to impure (non-pure) and cache the result. **[UE5]** This is easier to fight in UE5: right-click the pure function call in the Event Graph and choose **Show Exec Pins** — only that one call site is converted to an impure call. The option is available on most `CallFunction` nodes unless they override `UK2Node_CallFunction::CanToggleNodePurity`. *(contributed by [Urszula Kustra](https://www.linkedin.com/in/urszula-kustra/))*
 - **`ForEachLoop` without break for search** — always iterates the full array. Use `ForEachLoopWithBreak` and wire the Break pin.
 - **Spawning actors in Construction Script** — runs every time any property changes in the editor. Orphaned actors accumulate. Use Child Actor Components or spawn in BeginPlay.
 - **Missing `Replicates = true`** in Class Defaults for networked actors — no variables replicate, no RPCs execute on remote machines.
@@ -329,6 +329,7 @@ Getting the order wrong can cause `SetActorTickEnabled(false)` in BeginPlay to b
 | Direct Cast | One → One | Tight (hard reference) | Internal communication within the same module |
 
 - Use Blueprint Interfaces (BPI) for loose coupling instead of hard casts. **Important nuance**: if the interface function parameter type is a specific Blueprint class, that class still loads into memory. Use base types (Actor, Pawn) as parameter types to maintain the memory escape.
+- **[C++]** When checking interfaces in C++, `Cast<IDummyInterface>(Object)` is faster than `Object->Implements<UDummyInterface>()`, because it does not iterate over all classes the object inherits from. Caveat: `Cast` only works for interfaces implemented in C++ — for interfaces added in Blueprint you still need `Implements`. *(contributed by [Urszula Kustra](https://www.linkedin.com/in/urszula-kustra/))*
 - Cache costly Blueprint operations (component gets, cast results) in member variables. One cast in BeginPlay is fine. A cast in Tick is not.
 - Use `Validated Get` (right-click any variable → Convert to Validated Get) instead of the Is Valid + Branch + Get triple pattern. Same result, 3 fewer nodes, one `Is Valid` and `Is Not Valid` exec output.
 - `Set Timer by Event` instead of `Delay` for cancellable timed logic. Delay cannot be cancelled; if the actor is destroyed mid-delay, the resumed execution crashes on a dead object.
@@ -336,6 +337,7 @@ Getting the order wrong can cause `SetActorTickEnabled(false)` in BeginPlay to b
 - Use `Size Map` (right-click asset → Size Map) regularly to audit reference footprint. Run it on UI Blueprints and GameInstance — these are the most common culprits for unexpected memory chains ([Tom Looman optimization talk](https://tomlooman.com/unreal-engine-optimization-talk/)).
 - **Blueprint Nativization is gone in UE5.** **[Deprecated in UE5]**: Removed in UE5.0. The modern alternative is C++ Blueprint Function Libraries (`UFUNCTION(BlueprintCallable)`) for hot computation. Epic's benchmarks show C++ tight loops run ~800× faster than equivalent Blueprint loops for math workloads ([Tom Looman benchmarks](https://www.youtube.com/watch?v=Z5pKkBNEyc0)).
 - Use `UGameInstanceSubsystem` for global events and manager state. Persists across level transitions; avoids `Get All Actors Of Class` for manager lookups. Place global game events (currency change, pause) as Event Dispatchers on a `UGameInstanceSubsystem` — any Blueprint can bind without Tick and survives level transitions ([Global EventDispatchers](https://forums.unrealengine.com/t/global-eventdispatchers-in-gameinstance/485353)).
+  - **[UE5]** Alternatively, integrate the **GameplayMessageRouter** plugin from Epic's [Lyra sample](https://dev.epicgames.com/documentation/en-us/unreal-engine/lyra-sample-game-in-unreal-engine). It ships a `GameInstanceSubsystem` with one generic delegate that accepts any struct as input, plus a generic AsyncAction node that reacts to that delegate — so you can create any number of global events without recompiling code. *(contributed by [Urszula Kustra](https://www.linkedin.com/in/urszula-kustra/))*
 - Mark DataTable rows as `Primary Assets` and load via Asset Manager. Enables async loading and bundle-based streaming (load only the "UI" bundle for shop menus, full "Actor" bundle when spawning) ([Tom Looman Asset Manager guide](https://tomlooman.com/unreal-engine-asset-manager-async-loading/)).
 
 **Actor Dormancy — an underrated multiplayer optimization [UE4 + UE5]:**
@@ -841,15 +843,19 @@ Animation Insights channel, `stat game` (ComponentTick), `stat gpu` (SkinCache),
 - Use **Invalidation Box** around static or slowly-changing widget trees. Set `Cache Relative Transforms = true` for child widgets that translate.
 - **Visibility flags for performance:**
 
-| Visibility | Render | Hit Test | Tick |
+| Visibility | Render (Paint) | Hit Test | Layout space |
 |---|---|---|---|
 | Visible | Yes | Yes | Yes |
 | HitTestInvisible | Yes | No | Yes |
 | SelfHitTestInvisible | Yes | No (self only) | Yes |
-| Hidden | No | No | Yes |
+| Hidden | No | No | Yes (occupies space) |
 | Collapsed | No | No | No (layout skipped) |
 
-Use `Collapsed` for widgets that are not needed. `Hidden` still occupies layout space and ticks. `Collapsed` is the only mode that skips layout and tick entirely.
+**[CORRECTED — community feedback]** The old advice "always use `Collapsed` instead of `Hidden` because `Hidden` still ticks" was wrong on the tick part and oversimplified overall:
+
+- Invisible widgets generally do **not** tick — this includes `Hidden` widgets (verified empirically on UE 5.7 — *contributed by [Leszek Górniak](https://www.linkedin.com/in/lgorniak/)*) and currently-invisible 3D widgets.
+- The real difference is **Paint**, not Tick (profiling Slate in Insights shows two separate rows: Tick and Paint). A `Hidden` widget still occupies space in the viewport despite being invisible, so **Paint still runs on it**; a `Collapsed` widget takes 0 pixels, so it skips layout and paint entirely. Using `Collapsed` over `Hidden` is therefore a *paint* optimization. `Collapsed` is a valid alternative when the layout shift is acceptable — sometimes it isn't (hiding an element inside a list makes the remaining widgets jump around), sometimes it is (hiding the whole HUD or an entire 3D widget). *(contributed by [Urszula Kustra](https://www.linkedin.com/in/urszula-kustra/))*
+- `Collapsed` behaves completely differently from `Hidden` — it is not an "alternative" way of hiding, and no optimization justifies blind-swapping one for the other. `Hidden` reserves the UI area, `Collapsed` removes the object from layout entirely. If you are fighting UI performance, a better structural approach is a sensible, high-level hierarchy of **Widget Switchers** — tick effectively runs only on the switcher's active index (verified around UE 5.2). *(contributed by [Michał Kubas](https://www.linkedin.com/in/micha%C5%82-kubas-99549a79/))*
 
 - **Common UI [UE5 only]**: Epic's Common UI plugin provides platform-agnostic input routing, activatable widget stack management, and action bar generation.
 - **Texture Atlas**: pack small UI icons into a single texture atlas. Each texture slot in UMG requires a separate draw call. A 64-icon atlas uses one draw call; 64 individual textures use 64.
@@ -884,6 +890,7 @@ Widget Reflector, `stat Slate`, `stat SlateRendering`, `stat UMG`
 - **Push Model Replication**: use `MARK_PROPERTY_DIRTY_FROM_NAME` and `bIsPushBased = true` for infrequently-changed properties. Add `NetCore` to your module's dependencies or you will get a linker error.
 - **Replication Graph [UE4.20+ / UE5]**: for 50+ concurrent replicating actors per client, replace the default Net Driver with the Replication Graph plugin. Spatial grid nodes provide O(1) relevancy checks.
 - **Iris [UE5.4+ / default in UE5.5+]**: a rewrite of the replication data path. Enable via `net.Iris.UseIrisReplication=1`. Backward-compatible with existing UPROPERTY replication. Better CPU scalability at high player counts.
+- **Gameplay Ability System (GAS)** is also worth considering as a plugin that makes multiplayer optimization easier. For example, it reduces the need to enable replication on many actor instances just to fire a cosmetic Multicast — instead you can grab the `AbilitySystemComponent` from e.g. the Instigator and trigger a **GameplayCue** on it. *(contributed by [Urszula Kustra](https://www.linkedin.com/in/urszula-kustra/))*
 - **RepNotify vs Replicated**: use `RepNotify` (ReplicatedUsing) when clients need to react to a state change with logic (update UI, play sound). Use bare `Replicated` for values clients read directly.
 - **DOREPLIFETIME_CONDITION**: `COND_OwnerOnly` for per-player private data (inventory, ability cooldowns), `COND_SkipOwner` for state the owner already knows, `COND_InitialOnly` for setup data that never changes after spawn.
 
@@ -1205,7 +1212,7 @@ r.Streaming.AmortizeCPUToGPUCopy=0
 | 18 | Static Switch explosion in master material | 2ᴺ shader permutations; cook bloat; PSO stalls | Limit to < 6 switches; use Material Layering; Material Quality Switch | UE4 + UE5 |
 | 19 | No URO on background NPCs | Full animation evaluation on all characters every frame | Enable URO per-component; use Animation Budget Allocator | UE4 + UE5 |
 | 20 | UMG tick bindings for frequently-updated properties | Per-frame evaluation even when value unchanged | Event-driven updates via dispatchers | UE4 + UE5 |
-| 21 | UMG `Hidden` instead of `Collapsed` for invisible widgets | `Hidden` still ticks and occupies layout | `Collapsed` skips layout and tick | UE4 + UE5 |
+| 21 | UMG `Hidden` used where `Collapsed` fits | `Hidden` still occupies layout space, so Paint still runs on it (invisible widgets don't tick) | `Collapsed` skips layout and paint — but it changes the layout; consider Widget Switcher hierarchies instead | UE4 + UE5 |
 | 22 | Sound Concurrency not configured | Uncapped simultaneous voices; audio thread overrun | Create Concurrency assets; assign to Sound Classes | UE4 + UE5 |
 | 23 | `std::shared_ptr<UObject>` | GC unaware; double-free / use-after-free | `UPROPERTY` / `TStrongObjectPtr` for UObjects | UE4 + UE5 |
 | 24 | `this` captured raw in lambda delegates | Crash when actor is GC'd before lambda fires | `AddWeakLambda` or `MakeWeakObjectPtr` capture | UE4 + UE5 |
@@ -1795,8 +1802,11 @@ This logs which actors ended up in which streaming cells, their load ranges, and
 - Called in Tick at 60 fps: ~120,000–300,000 comparisons per second
 - Called in Tick on a server with 20 connected clients: multiplied by connection count
 
+Of the whole `Get All Actors...` family, **`Get All Actors With Interface` is the worst offender** — besides iterating every actor in the world, it also iterates all classes each actor inherits from to check whether it implements the interface. *(contributed by [Urszula Kustra](https://www.linkedin.com/in/urszula-kustra/))*
+
 Correct alternatives:
 - **Manager/Subsystem registration**: actors register themselves in GameMode or GameState in BeginPlay and unregister in EndPlay. The manager holds a typed TArray. Zero lookup cost.
+- **Octree (spatial partitioning)**: for spatial "what is near X" queries, an octree beats any world scan. See e.g. the [UE-DynamicOctree plugin](https://github.com/BenVlodgi/UE-DynamicOctree) — written for UE5, but since it contains no Content it is relatively easy to port to UE4. *(contributed by [Urszula Kustra](https://www.linkedin.com/in/urszula-kustra/))*
 - **Overlap/collision events**: for "all enemies within radius," use `SphereTraceMulti` or `GetOverlappingActors` on a collision component — spatially accelerated, no world scan.
 - **Gameplay Tag queries**: for heterogeneous actor types, store a `TMap<FGameplayTag, TArray<AActor*>>` in a Subsystem and query by tag.
 
@@ -1807,6 +1817,8 @@ A "Pure" Blueprint node (green, no execution pins) is re-evaluated every time it
 This is architecturally correct in functional programming terms — pure functions have no side effects, so re-evaluation is safe. But in Blueprints, "pure" only means no exec pin, not that it is truly free to call. A pure function that iterates an array will iterate it once per downstream consumer.
 
 Fix: call the function once as an impure (non-pure) call, cache the output in a local variable, then consume the variable. Right-click the pure node → Convert to Impure.
+
+**[UE5]** UE5 makes this easier: right-click the pure function node in the Event Graph and choose **Show Exec Pins** — only that single call site converts to an impure call. The option is available on most `CallFunction` nodes, unless they override `UK2Node_CallFunction::CanToggleNodePurity`. *(contributed by [Urszula Kustra](https://www.linkedin.com/in/urszula-kustra/))*
 
 ### Soft Reference Memory Escape Patterns **(UE4 + UE5)**
 

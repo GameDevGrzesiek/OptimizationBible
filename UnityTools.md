@@ -60,6 +60,7 @@ The Unity Profiler (`Window → Analysis → Profiler`, `Ctrl+7`) is the primary
 - **Memory** — total allocated, GC heap, asset categories (textures, meshes, audio). Not a substitute for the Memory Profiler package.
 - **Audio** — CPU time for mixing and DSP effects.
 - **Physics** — time in physics simulation. Diagnose over-budget `FixedUpdate`.
+- **Addressable Assets** — not shown by default; add it via the Profiler Modules dropdown (requires the Addressables package). Tracks the allocation/release state of Addressables handles over time — the fastest way to spot assets that were loaded but never Released. *(contributed by [Michał Szymerski](https://www.linkedin.com/in/michalszymerski/))*
 
 **Timeline vs Hierarchy:** Timeline shows all threads simultaneously — essential for diagnosing sync stalls (`WaitForJob`, `Gfx.WaitForPresentOnGfxThread`). Hierarchy is a sorted table for ranking costly functions. Use Timeline first, Hierarchy to drill in.
 

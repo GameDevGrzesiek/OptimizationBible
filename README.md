@@ -62,6 +62,9 @@ A brief description of tools for UE optimization
 ### b) [Unreal Engine Optimization Guide](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnrealEngine.md)  
 Optimization guide for Unreal
 
+### c) [Useful Plugins for Unreal Engine](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnrealEnginePlugins.md)  
+Plugins and tools that help with optimization work in Unreal projects
+
 ---
 
 ## 3. Unity
@@ -70,3 +73,18 @@ A brief description of tools for Unity optimization
 
 ### b) [Unity Optimization Guide](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/Unity.md)  
 Optimization guide for Unity
+
+### c) [Useful Plugins for Unity](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnityPlugins.md)  
+Plugins and packages that help with optimization work in Unity projects
+
+---
+
+## Contributors
+
+Huge thanks to everyone who shared their tips and corrections — their contributions are credited inline in the guides:
+
+- [Michał Szymerski](https://www.linkedin.com/in/michalszymerski/) — Unity: TMP Raycast Targets, Sprite Atlas compression, Addressables profiler module, editor iteration performance
+- [Urszula Kustra](https://www.linkedin.com/in/urszula-kustra/) — Unreal: octree lookups, C++ interface casts, GAS for multiplayer, GameplayMessageRouter, pure function exec pins, Collapsed vs Hidden
+- [Leszek Górniak](https://www.linkedin.com/in/lgorniak/) — Unreal: UMG Hidden widgets tick behavior verification
+- [Michał Kubas](https://www.linkedin.com/in/micha%C5%82-kubas-99549a79/) — Unreal: Collapsed vs Hidden semantics, Widget Switcher hierarchies
+- [Radosław Paszkowski](https://www.linkedin.com/in/rpaszkowski/) — Unreal: GPU profiling & debugging field tips, GPU pass problem reference table

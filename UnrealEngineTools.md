@@ -104,6 +104,7 @@ This guide covers Unreal Engine 4 (4.22–4.27) and Unreal Engine 5 (5.0–5.6+)
       - [Build Configuration Profiling Capability](#build-configuration-profiling-capability)
   - [CSVtoSVG Tool (UE4 + UE5)](#csvtosvg-tool-ue4--ue5)
   - [RenderDoc / PIX / NSight (UE4 + UE5)](#renderdoc--pix--nsight-ue4--ue5)
+  - [GPU Profiling & Debugging Field Tips (UE4 + UE5)](#gpu-profiling--debugging-field-tips-ue4--ue5)
   - [Build Configurations (UE4 + UE5)](#build-configurations-ue4--ue5)
   - [LLM (Low-Level Memory Tracker) (UE4.20+ expanded in UE5)](#llm-low-level-memory-tracker-ue420-expanded-in-ue5)
 - [Prerequisites for Checkups](#prerequisites-for-checkups)
@@ -200,6 +201,32 @@ Open with `ProfileGPU` console command or `Ctrl+Shift+,`. Displays GPU time per 
 - `Lumen` **[UE5 only]** — screen probe gather, reflections, surface cache updates
 
 The milliseconds toggle (switch between GPU cycles and ms) is essential for platform comparison. UE5.6 unified the GPU Profiler — `stat gpu`, `ProfileGPU`, and Insights GPU track now share the same instrumentation stream.
+
+**GPU pass → likely problem reference** *(contributed by [Radosław Paszkowski](https://www.linkedin.com/in/rpaszkowski/); see also his LinkedIn posts on [UE5 optimization findings](https://www.linkedin.com/posts/rpaszkowski_while-optimizing-several-ue5-games-i-saw-ugcPost-7457688771589799936-07ac/) and [a common Unreal mistake](https://www.linkedin.com/posts/rpaszkowski_theres-one-simple-mistake-in-unreal-that-ugcPost-7419831119929487360-rM_R/))*
+
+The main `stat gpu` / `ProfileGPU` passes that most often cause problems during optimization (Nanite omitted — when optimizing, it is often disabled entirely):
+
+| Pass | Potential problem |
+|---|---|
+| Preprocess + Render Velocities | Too much geometry. Complex vertex shader (WPO). |
+| Composition BeforeBasePass | Many complex Decals. |
+| BasePass | Too much geometry. Complex pixel shader. |
+| Postprocessing | Custom post-processes are the usual suspect; otherwise too many post-processes or bad settings. |
+| LumenReflections | Too many objects with low roughness. Check `r.Lumen.Reflections.MaxRoughnessToTrace`. |
+| LumenScreenProbeGather | Radiance cache settings too high. |
+| Translucency | Too much translucency. Reduce the count or move translucency to a different point in the rendering pipeline (before the upscaler). |
+| Niagara GPU Simulation | Too many particles or particles too complex. |
+| Lights | Too many lights or reflection captures. |
+| ShadowDepths + Shadows | Too many shadow-casting lights and too many shadow-casting objects. Attenuation too large on lights (better to uncheck `Use Inverted Squared Falloff`). VSM invalidations coming from WPO or Skeletal Meshes. |
+| Composition PreLighting | If expensive, it's mostly Decals with AO and/or Emissive (**IMPORTANT!** Static Switches don't help here — decals still render in this pass as long as *anything* is connected to AO or Emissive). |
+| SubsurfaceScattering | Expensive SSS — reduce the number of objects with SSS or lower the settings. |
+| Translucent Lighting | Many lights with Translucent Lighting, or the Translucency Lighting Volume resolution setting. |
+| Volumetric Fog | Fog grid too dense. Check `r.VolumetricFog.GridPixelSize` and `r.VolumetricFog.GridSizeZ`. |
+| Reflections | High number of Reflection Capture actors. |
+| Screen Space Reflections | SSR settings too high. |
+| RayTracingDynamicGeometry + Scene | Too much geometry included in RT — exclude everything unnecessary from RT. Additionally, WPO+RT goes through a worse pass, so avoid it (SkinCache is better in that case). |
+| TAA/TSR/Upscalers | Sometimes they are just expensive, but often the settings/presets can be tuned down — check the documentation. |
+| InitViews + Occlusion Tests | Too many objects / too much geometry. |
 
 For capture-level debugging, enable the **RenderDoc** plugin (restart required), then use the RenderDoc toolbar button to capture a frame. RenderDoc exposes per-draw-call shaders, resource states, and timing unavailable from the in-engine visualizer. With D3D12, set `r.ShowMaterialDrawEvents 0` before capturing to eliminate GPU marker overhead from skewing timing ([AMD GPUOpen — Unreal Engine Performance Guide](https://gpuopen.com/learn/unreal-engine-performance-guide/)).
 
@@ -1014,6 +1041,31 @@ When capturing with D3D12, set `r.ShowMaterialDrawEvents 0` before capture to el
 
 ---
 
+### GPU Profiling & Debugging Field Tips **(UE4 + UE5)**
+
+*(contributed by [Radosław Paszkowski](https://www.linkedin.com/in/rpaszkowski/))*
+
+- If you forgot to enable `r.ShowMaterialDrawEvents` (or other GPU profiling CVars) in your `.ini` files, you can simply run **`r.RHISetGPUCaptureOptions 1`** during gameplay — it automatically sets most of the things needed for GPU profiling/debugging.
+- When the PIX plugin is enabled, you can always attach it by launching with **`-AttachPIX`**. Then, even without launching PIX itself, you can capture either via the editor button or via **`pix.GpuCaptureFrame`**.
+- On **Vulkan**, launch with **`-ForceVulkanDrawMarkers`** for profiling. (Careful: in older Unreal versions the flag had a typo — `-ForceVulkanDDrawMarkers` — fixed around 5.6.)
+- When the **GPU crashes**, launching with **`-gpucrashdebugging`** helps a lot — it enables breadcrumbs, DRED, and Aftermath. All of these are extremely useful for finding out why and what actually blew up.
+- The first thing to do on a GPU crash: enable the **DirectX Debug Layer** via **`-d3ddebug`** or through the DirectX Control Panel (`dxcpl`).
+- Always remember the **upscaler settings** when profiling. Dynamic Resolution can be silently enabled — you conclude "the game runs OK" while it is actually running at 50% upscaling and barely holding 30 FPS.
+- And obviously: **disable VSync and the FPS limit** when profiling.
+- When debugging shaders, enable **shader debug symbols**. In `BaseEngine.ini` there is a `[ShaderCompiler]` block with the relevant toggles, or add these to your own `.ini`:
+
+```ini
+r.Shaders.Symbols=1
+r.Shaders.GenerateSymbols=1
+r.Shaders.WriteSymbols=1
+r.Shaders.Optimize=0
+r.Shaders.ExtraData=1
+```
+
+- When launching the game you can pass extra parameters for which map to load and with which GameMode, e.g. `Game.exe /Game/Maps/BonusMaps/BonusMap.umap?game=MyGameMode`. This is extremely handy for automated testing — create a test GameMode that does a flythrough, and instead of building a special version or writing extra code, just swap the GameMode this way.
+
+---
+
 ### Build Configurations **(UE4 + UE5)**
 
 | Config | Optimization | Logging | Profiling | Use For |
@@ -1056,7 +1108,8 @@ Before profiling:
 1. **Profile in a Test build** packaged for the target platform, not in Editor PIE.
 2. **Close other applications** consuming CPU or GPU resources (Chrome, Discord, OBS, secondary monitors with heavy compositors).
 3. **Establish a stable 60-second baseline** in a representative gameplay scenario — not the main menu, not a cutscene, but actual gameplay.
-4. **Disable VSync** during CPU/GPU bottleneck investigation (`r.VSync 0`) to see uncapped frame times.
+4. **Disable VSync and any FPS limit** during CPU/GPU bottleneck investigation (`r.VSync 0`, `t.MaxFPS 0`) to see uncapped frame times.
+5. **Check the upscaler / Dynamic Resolution state.** Dynamic Resolution left enabled can silently mask results — the game "runs OK" while actually rendering at 50% resolution and barely holding 30 FPS. *(contributed by [Radosław Paszkowski](https://www.linkedin.com/in/rpaszkowski/))*
 5. **Profile on target hardware.** Profiling on a developer workstation and shipping on console gives misleading data. Use platform-specific profiling tools for console targets.
 6. **One change at a time.** Make one optimization, measure, compare. Multiple simultaneous changes make it impossible to attribute gains or regressions.
 

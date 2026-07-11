@@ -79,6 +79,7 @@ You can find them [HERE](https://github.com/GameDevGrzesiek/OptimizationBible/bl
   - [Physics Project Settings Reference](#physics-project-settings-reference)
   - [Audio Project Settings Reference](#audio-project-settings-reference)
   - [Editor Performance Settings Reference (All versions)](#editor-performance-settings-reference-all-versions)
+  - [Editor Iteration Performance (All versions)](#editor-iteration-performance-all-versions)
 - [Unity ↔ UE Concept Bridge](#unity--ue-concept-bridge)
 - [Version Migration Notes](#version-migration-notes)
   - [Migrating from Built-in RP to URP (Pre-2020) to (2020-2022 LTS)](#migrating-from-built-in-rp-to-urp-pre-2020-to-2020-2022-lts)
@@ -923,6 +924,7 @@ Unity's UI system is the most commonly misunderstood performance area. Canvas ba
 
 **Common pitfalls:**
 - **[All versions]** Every `Image` and `RawImage` has **Raycast Target = true** by default. The Graphic Raycaster iterates every enabled Raycast Target on input. 200 images = 200 intersection tests per frame.
+- **[All versions]** The same applies to **TextMeshPro** text objects — they are also created with Raycast Target enabled by default. You can change this default for all newly created TMP text objects in the **TMP Settings** configuration file. *(contributed by [Michał Szymerski](https://www.linkedin.com/in/michalszymerski/))*
 - **[All versions]** Single Canvas with thousands of mixed static and animating elements — any change to any element rebuilds the entire Canvas.
 - **[All versions]** Layout Group on high-frequency dynamic elements — each Layout Element dirty triggers `GetComponent` calls walking up the transform hierarchy.
 - **[All versions]** `SetActive(true/false)` on a Canvas with many children — triggers full rebuild on activate.
@@ -945,7 +947,7 @@ Root Canvas
 - Disable **Raycast Target** on every non-interactive element (decorative images, backgrounds, text labels that aren't buttons). This is a systematic change — do it for every Image component in the project.
 - Use **Screen Space - Overlay** Render Mode as the default (cheapest; no camera involvement). Use Screen Space - Camera only when depth effects are required. World Space only when diegetic UI is a design requirement.
 - Use **TextMeshPro** for all text. SDF rendering, resolution-independent, GPU-cheap, supports rich text. [Unity Manual – UI System Compare](https://docs.unity3d.com/6000.4/Documentation/Manual/UI-system-compare.html)
-- Pack UI icons, button states, and small decorative images into **Sprite Atlases** — elements from the same atlas share a material and batch into one draw call.
+- Pack UI icons, button states, and small decorative images into **Sprite Atlases** — elements from the same atlas share a material and batch into one draw call. However, remember to always leave the source sprites **without compression** and set the compression on the Sprite Atlas only — otherwise you will end up with double-compressed, messed up sprites. *(contributed by [Michał Szymerski](https://www.linkedin.com/in/michalszymerski/))*
 - Avoid baking layouts in Layout Groups on high-frequency dynamic content. Instead, anchor positions and offsets where possible — they are purely a transform property, not a layout calculation.
 - For **UI Toolkit** (production-ready Unity 2022 LTS+), animate via USS transitions on `translate`, `scale`, `rotate` — these run on the GPU via `DynamicTransform` usage hint and do not trigger layout recalculation. Never animate `width`, `height`, `top`, or `left` — those trigger expensive layout recalcs. [Unity Manual – Optimizing UI Toolkit](https://docs.unity.cn/6000.3/Documentation/Manual/best-practice-guides/ui-toolkit-for-advanced-unity-developers/optimizing-performance.html)
 - UI Toolkit batches via an "uber shader" supporting up to **8 textures per batch**. Exceeding 8 unique textures in one batch breaks batching.
@@ -1088,6 +1090,7 @@ Never ship a Development Build. Always profile against a non-Development build f
   1. **Pack Separately** vs **Pack Together** — group assets that load/unload together into the same bundle. Fine-grained bundles enable precise unloading but increase metadata overhead.
   2. Run **Check Duplicate Bundle Dependencies** in Analyze window — shared textures pulled into multiple bundles create duplicate assets in memory.
   3. Always call `Addressables.ReleaseAsset` / `ReleaseInstance` — missing calls are the most common Addressables memory leak. [Unity Blog – Saving memory with Addressables](https://unity.com/blog/technology/tales-from-the-optimization-trenches-saving-memory-with-addressables)
+  4. You can track the allocation state of Addressables in the Profiler — add the **Addressable Assets** module to the Profiler view (Profiler Modules dropdown). *(contributed by [Michał Szymerski](https://www.linkedin.com/in/michalszymerski/))*
 
 - **Unity Test Runner** for automated performance regression:
   - Edit Mode tests: pure logic, math, serialization (no Play Mode needed)
@@ -1643,6 +1646,47 @@ These settings have zero shipping build impact but dramatically affect daily ite
 | Script Changes While Playing | Preferences → External Tools | Recompile and Continue Playing (not Stop Playing and Recompile) |
 | Preferred Version Control | Project Settings → Version Control | Visible Meta Files (never Hidden Meta Files) |
 
+### Editor Iteration Performance **(All versions)**
+
+Condensed from [Sebastian Schöner — Why Your Unity Project Is Slow](https://blog.s-schoener.com/2023-08-16-why-your-unity-project-is-slow/) *(suggested by [Michał Szymerski](https://www.linkedin.com/in/michalszymerski/))*. Runtime performance and editor iteration performance are separate problems — a project can ship at 60 FPS and still waste hours of developer time daily on slow domain reloads, imports, and Play Mode entry.
+
+**Domain reloads** — every script change invalidates all C# state: serialize, unload domain, boot new domain, deserialize, re-initialize (~10 s typical, worse on large projects):
+- Minimize work in static constructors and `[InitializeOnLoad]` — they run on *every* domain reload.
+- Cache expensive lookups (e.g. asset searches) in `SessionState` instead of recomputing per reload.
+- 30–50% of domain reload time can go into just JIT-compiling code — less code loaded means faster reloads; audit and remove unused packages and Asset Store items.
+
+**Serialization overhead:**
+- Avoid serializing large data structures (big arrays, long strings); mark fields you don't need with `[NonSerialized]`.
+- Close unused editor windows — they are ScriptableObjects that get serialized on every reload.
+- Minimize custom `ISerializationCallbackReceiver` implementations.
+
+**Script compilation:**
+- Balance asmdef granularity — too many assemblies adds per-assembly overhead, too few loses parallelization.
+- Profile Roslyn analyzers and source generators; consider disabling Burst compilation during iteration.
+- Disable **Auto Refresh** (Preferences) and refresh manually to batch multiple script changes into one import + compile + reload cycle.
+
+**Asset importing:**
+- Use Presets for default import settings; disable **Generate Physics Shape** on sprites that don't need it.
+- Avoid custom `AssetPostprocessor`s where possible; `OnPostprocessAllAssets` receives *every* imported asset — profile it regularly.
+- Keep source assets (PSD, blend files) out of the Assets folder; if unavoidable, place them in hidden folders (prefixed with `.` or suffixed with `~`).
+- Enable parallel import (Unity 2022+).
+
+**Asset loading / editor scripting:**
+- Never call `AssetDatabase.FindAssets()` in initialization code — cache paths in `SessionState`.
+- Use `TypeCache` instead of reflection for type scans.
+- Batch multiple `AssetDatabase` operations with `StartAssetEditing`/`StopAssetEditing`.
+
+**Entering Play Mode:**
+- Enable domain reload + scene reload skipping (see table above).
+- Measure `PostProcessScene`, `RuntimeInitializeOnLoad`, and `playModeStateChanged` callbacks — Asset Store packages sometimes burn seconds there.
+- Move expensive precomputation, pooling, shader warmup, and data loading to lazy initialization instead of `Awake()`/`Start()`.
+- For large static geometry scenes, consider `BatchRendererGroup` instead of static batching — static batching is recomputed on Play Mode entry.
+
+**Prefab editing:**
+- Edit in Prefab Mode to batch all changes before saving — pay the import cost once, not per edit.
+- Avoid deeply nested prefab hierarchies; changing a source prefab re-imports it and all dependents.
+- Close large scenes before editing widely-used source prefabs to avoid updating thousands of instances.
+
 ---
 
 ## Unity ↔ UE Concept Bridge
@@ -1798,6 +1842,7 @@ Every major version upgrade should be followed by a Profile Analyzer comparison 
 - [Azur Games — SRP Batcher optimization](https://azurgames.com/blog/optimizing-the-midcore-increasing-fps-using-srp-batcher/)
 - [Angry Shark Studio — UI Toolkit vs UGUI 2025](https://www.angry-shark-studio.com/blog/unity-ai-toolkit-vs-ugui-2025-guide/)
 - [Coffee Brain Games — Reducing Compile Time with asmdef](https://coffeebraingames.wordpress.com/2018/01/21/reducing-compile-time-in-unity-using-assembly-definition-files/)
+- [Sebastian Schöner — Why Your Unity Project Is Slow](https://blog.s-schoener.com/2023-08-16-why-your-unity-project-is-slow/) — Editor iteration performance: domain reloads, compilation, imports
 - [Generalist Programmer — Burst Compiler Guide](https://generalistprogrammer.com/tutorials/unity-burst-compiler-complete-performance-optimization-guide)
 - [Embrace.io — GC spikes in Unity](https://embrace.io/blog/garbage-collector-spikes-unity/)
 - [JetBrains Rider — Camera.main inspection](https://www.jetbrains.com/help/rider/Unity.PerformanceCriticalCodeCameraMain.html)
