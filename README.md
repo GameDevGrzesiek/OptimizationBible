@@ -1,11 +1,5 @@
 # Optimization Bible
-Hi! My name is Grzegorz Wątroba
-
-![Alt text](https://cdn.mobygames.com/02e849a6-ab71-11ed-837d-02420a00019b.webp)
-
-and I'm making games since 2010:  
-https://www.mobygames.com/person/919153/grzegorz-watroba/  
-https://www.linkedin.com/in/watrobagrzegorz/  
+Hi! My name is Grzegorz Wątroba and I'm making games since 2010 ([MobyGames](https://www.mobygames.com/person/919153/grzegorz-watroba/), [LinkedIn](https://www.linkedin.com/in/watrobagrzesiek/)).
 
 This repository hosts my notes regarding games optimization with focus on Unity and Unreal in particular.  
 
@@ -13,33 +7,6 @@ I'm mostly interested in game optimization and porting, not very hot for mobile 
 
 Some of the notes are simple copies of guides, some are my own findings. Most of them have references or sources.
 These are not universal, not all of these might work in your project, but it's worth to try :P  
-
-If you think it's useful to you - find me on social media, follow, like my content on LinkedIn or YouTube, do some shoutout - whatever you're comfortable with:  
-
-https://www.youtube.com/@okiemdeva  
-https://x.com/gamedevgrzesiek  
-https://x.com/okiemdeva  
-https://bsky.app/profile/gwatroba.com  
-https://bsky.app/profile/okiemdeva.pl  
-
-
-If you'll like it even more: donate something on patronite or buycoffee (but you don't have to):  
-https://buycoffee.to/okiemdeva  
-https://patronite.pl/OkiemDeva  
-
-OR
-
-Wishlist my new game (and buy it, maybe when it's released... ?)  
-https://store.steampowered.com/app/4184130/Foxy_Dumplings/
-
-If you'll find any mistake, if you think I'm wrong or something is not correct in any sense - write to me.
-If you want to share some tips of your own - let me know, and I will, of course, credit your contribution!
-
-Contact me here:  
-<watroba.grzegorz@gmail.com>  
-<okiemdeva@gmail.com>  
-
-I'll **TRY** to update this regularily...  
 
 ---
 
@@ -76,6 +43,25 @@ Optimization guide for Unity
 
 ### c) [Useful Plugins for Unity](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnityPlugins.md)  
 Plugins and packages that help with optimization work in Unity projects
+
+---
+
+If you find this useful, you can find me on social media, follow and like my content:
+[YouTube](https://www.youtube.com/@okiemdeva) · [X (gamedev)](https://x.com/gamedevgrzesiek) · [X (Okiem Deva)](https://x.com/okiemdeva) · [Bluesky](https://bsky.app/profile/gwatroba.com) · [Bluesky (Okiem Deva)](https://bsky.app/profile/okiemdeva.pl)
+
+You can also support my work:
+[Buy Me a Coffee](https://buycoffee.to/okiemdeva) · [Patronite](https://patronite.pl/OkiemDeva)
+
+...or wishlist my game [Foxy Dumplings on Steam](https://store.steampowered.com/app/4184130/Foxy_Dumplings/) — it's worth to try :P
+
+If you'll find any mistake, if you think I'm wrong or something is not correct in any sense - write to me.
+If you want to share some tips of your own - let me know, and I will, of course, credit your contribution!
+
+Contact me here:  
+<watroba.grzegorz@gmail.com>  
+<okiemdeva@gmail.com>  
+
+I'll **TRY** to update this regularily...  
 
 ---
 
