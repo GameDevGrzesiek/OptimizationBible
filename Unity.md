@@ -270,7 +270,7 @@ public struct VelocityJob : IJobParallelFor
 }
 ```
 
-- Choose allocator correctly: `Allocator.Temp` (fastest, single frame, cannot pass to job fields), `Allocator.TempJob` (fast, ≤4 frames, must Dispose), `Allocator.Persistent` (unlimited, must Dispose manually — leaks are silent). [NativeContainer allocators guide](https://outscal.com/blog/how-to-choose-and-manage-collections-for-performance-in-unity)
+- Choose allocator correctly: `Allocator.Temp` (fastest, single frame, cannot pass to job fields), `Allocator.TempJob` (fast, ≤4 frames, must Dispose), `Allocator.Persistent` (unlimited, must Dispose manually — leaks are silent). [Allocator overview (Unity Collections Manual)](https://docs.unity3d.com/Packages/com.unity.collections@2.5/manual/allocator-overview.html)
 - Chain `JobHandle` dependencies explicitly. `JobHandle.CombineDependencies` merges multiple handles. The Dependency property on `ISystem` (`state.Dependency`) automatically chains system dependencies in ECS.
 - Prefer `ISystem` over `SystemBase` for all performance-critical ECS systems:
 
@@ -1702,7 +1702,7 @@ This guide's companion document is the UE4/UE5 Optimization Guide. If you use bo
 | `shader_feature_local` / `multi_compile_local` | Material Static Switch Parameters | Both select shader paths at compile time without runtime branching overhead. |
 | Addressables | UE Asset Manager + Primary Asset Labels | Both provide reference-counted async asset loading over a bundle/pak layer. Addressables is simpler to configure; UE Asset Manager is more deeply integrated with streaming. |
 | Entity Component System (ECS) | Mass AI / Data-Oriented Entities | Both are cache-friendly entity-component architectures for high entity counts. Unity's is more general-purpose; UE's Mass system is specifically targeted at AI crowd simulations. |
-| Burst Compiler | ISPC / Multithreaded execution in UE | Both generate SIMD-optimized code for data-parallel workloads. Burst is more accessible (C# + `[BurstCompile]`); ISPC requires a separate language. |
+| Burst Compiler | [ISPC](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnrealEngine.md#ispc--shaders-for-the-cpu-ue4--ue5) / Multithreaded execution in UE | Both generate SIMD-optimized code for data-parallel workloads. Burst is more accessible (C# + `[BurstCompile]`); ISPC requires a separate language — see the ISPC section in the UE guide for a full tutorial. |
 | Light Probes + APV | Distance Field Ambient Occlusion + Lumen (indirect) | Unity APV ≈ UE5 Lumen's indirect lighting cache conceptually. Both provide per-pixel GI for dynamic objects. Lumen requires no baking but is GPU-heavier; APV is baked but near-zero runtime cost. |
 | Progressive Lightmapper | CPU Lightmass (UE4) / GPU Lightmass (UE4.26+) | Both are path-tracing bakers. UE GPU Lightmass is broadly comparable to Unity's Progressive GPU Lightmapper in workflow. |
 | STP (Spatial-Temporal Post-Processing) | TSR (Temporal Super Resolution) | Both are software temporal upsamplers built into the engine, requiring no vendor SDK. TSR (UE5) is more mature with wider platform support; STP (Unity 6+) is newer but compute-only. |
@@ -1825,7 +1825,7 @@ Every major version upgrade should be followed by a Profile Analyzer comparison 
 
 - [Saving memory with Addressables](https://unity.com/blog/technology/tales-from-the-optimization-trenches-saving-memory-with-addressables)
 - [Unite 2022 – Performance in Unity](https://www.youtube.com/c/UnityTechnologies)
-- [Unity SRP Batcher — official deep dive](https://blog.unity.com/engine-platform/srp-batcher-speed-up-your-rendering)
+- [Unity SRP Batcher — official deep dive](https://unity.com/blog/engine-platform/srp-batcher-speed-up-your-rendering)
 
 ### Community Guides and Blogs
 
@@ -1840,7 +1840,7 @@ Every major version upgrade should be followed by a Profile Analyzer comparison 
 - [NotSlot — Unity Optimization](https://www.youtube.com/@NotSlot) — Performance-focused Unity content
 - [fazz.dev — SRP Batcher deep dive](https://fazz.dev/articles/building-srp-part-three)
 - [Azur Games — SRP Batcher optimization](https://azurgames.com/blog/optimizing-the-midcore-increasing-fps-using-srp-batcher/)
-- [Angry Shark Studio — UI Toolkit vs UGUI 2025](https://www.angry-shark-studio.com/blog/unity-ai-toolkit-vs-ugui-2025-guide/)
+- [Angry Shark Studio — UI Toolkit vs UGUI 2025](https://www.angry-shark-studio.com/blog/unity-ui-toolkit-vs-ugui-2025-guide/)
 - [Coffee Brain Games — Reducing Compile Time with asmdef](https://coffeebraingames.wordpress.com/2018/01/21/reducing-compile-time-in-unity-using-assembly-definition-files/)
 - [Sebastian Schöner — Why Your Unity Project Is Slow](https://blog.s-schoener.com/2023-08-16-why-your-unity-project-is-slow/) — Editor iteration performance: domain reloads, compilation, imports
 - [Generalist Programmer — Burst Compiler Guide](https://generalistprogrammer.com/tutorials/unity-burst-compiler-complete-performance-optimization-guide)
@@ -1851,7 +1851,7 @@ Every major version upgrade should be followed by a Profile Analyzer comparison 
 - [Steam Audio Unity Guide](https://valvesoftware.github.io/steam-audio/doc/unity/guide.html)
 - [Mirror — Lag Compensation](https://mirror-networking.gitbook.io/docs/manual/general/lag-compensation)
 - [HackerNoon — Unity 2023.1 Awaitable Class](https://hackernoon.com/unity-20231-introduces-awaitable-class)
-- [NativeContainer allocators guide — Outscal](https://outscal.com/blog/how-to-choose-and-manage-collections-for-performance-in-unity)
+- [Allocator overview — Unity Collections Manual](https://docs.unity3d.com/Packages/com.unity.collections@2.5/manual/allocator-overview.html)
 - [Techarthub — Texture Compression in Unity](https://techarthub.com/an-introduction-to-texture-compression-in-unity/)
 - [Chunk iteration in Entities 1.0 — Coffee Brain Games](https://coffeebraingames.wordpress.com/2023/06/25/chunk-iteration-in-entities-1-0/)
 

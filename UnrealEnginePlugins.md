@@ -23,6 +23,7 @@ A curated list of plugins and tools that help with (or are relevant to) optimiza
 | [RenderDoc plugin (built-in)](https://renderdoc.org/) | One-click GPU frame captures from the editor toolbar | Enable via Plugins → RenderDoc; see [UE Tools doc](UnrealEngineTools.md) |
 | PIX plugin (built-in) | Attach PIX for D3D12 GPU captures | When enabled, launch with `-AttachPIX`; capture via editor button or `pix.GpuCaptureFrame` — even without launching PIX itself *(contributed by [Radosław Paszkowski](https://www.linkedin.com/in/rpaszkowski/))* |
 | [Gameplay Insights / Animation Insights (built-in)](https://dev.epicgames.com/documentation/en-us/unreal-engine/animation-insights-in-unreal-engine) | Extends Unreal Insights with animation/gameplay tracks | Ships with the engine, disabled by default |
+| [IntelISPC (built-in UBT module)](https://ispc.github.io/) | SIMD "shaders for the CPU" — UBT compiles `.ispc` files automatically | See the [ISPC section in the UE guide](https://github.com/GameDevGrzesiek/OptimizationBible/blob/main/UnrealEngine.md#ispc--shaders-for-the-cpu-ue4--ue5) for tutorial and use-case scenarios |
 
 ## Gameplay & Architecture
 

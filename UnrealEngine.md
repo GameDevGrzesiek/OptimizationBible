@@ -115,6 +115,14 @@ You can find them [HERE](https://github.com/GameDevGrzesiek/OptimizationBible/bl
   - [Custom Depth Stencil — Stencil Value Strategy (UE4 + UE5)](#custom-depth-stencil--stencil-value-strategy-ue4--ue5)
   - [Render Targets for Procedural Workflows (UE4 + UE5)](#render-targets-for-procedural-workflows-ue4--ue5)
   - [Lumen Surface Cache — Advanced Tuning (UE5 only)](#lumen-surface-cache--advanced-tuning-ue5-only)
+- [ISPC — Shaders for the CPU (UE4 + UE5)](#ispc--shaders-for-the-cpu-ue4--ue5)
+  - [What Is ISPC and the SPMD Model](#what-is-ispc-and-the-spmd-model)
+  - [Compiling and Integrating ISPC with UE (UE4.23+ / UE5)](#compiling-and-integrating-ispc-with-ue-ue423--ue5)
+  - [Where UE Already Uses ISPC (and How to A/B Test It)](#where-ue-already-uses-ispc-and-how-to-ab-test-it)
+  - [ISPC Use-Case Scenarios](#ispc-use-case-scenarios)
+  - [Advanced ISPC Patterns](#advanced-ispc-patterns)
+  - [CPU vs ISPC vs GPU — Decision Matrix](#cpu-vs-ispc-vs-gpu--decision-matrix)
+  - [Determinism, Profiling, and Gotchas](#determinism-profiling-and-gotchas)
 - [Bibliography and Further Reading](#bibliography-and-further-reading)
   - [Talks (Unreal Fest, GDC)](#talks-unreal-fest-gdc)
   - [Blogs and Articles](#blogs-and-articles)
@@ -122,6 +130,7 @@ You can find them [HERE](https://github.com/GameDevGrzesiek/OptimizationBible/bl
   - [YouTube Channels](#youtube-channels)
   - [Repositories and Community References](#repositories-and-community-references)
   - [Epic Forums and Knowledge Base](#epic-forums-and-knowledge-base)
+  - [ISPC](#ispc)
 
 ---
 
@@ -378,7 +387,7 @@ The Construction Script runs on every property change in the Details panel, ever
 - Blueprint diff tool: right-click Blueprint → Revision Control → Diff Against Depot. Binary `.uasset` files cannot be diffed with standard text tools ([Kokku Games Blueprint diff guide](https://kokkugames.com/tutorial-stop-guessing-what-changed-in-your-blueprintsgit-blueprint-diff-inside-unreal-engine/)).
 - Editor Utility Widgets (EUW) run Blueprint logic in the editor only. Use for batch operations, naming convention validation, and procedural level setup — without any runtime cost.
 - `Get Class Defaults` node accesses CDO data without constructing an instance.
-- Adaptive Net Update Frequency: `net.UseAdaptiveNetUpdateFrequency 1` — when enabled, the engine dynamically lowers the update rate to `MinNetUpdateFrequency` when no properties have changed ([Matt Gibson's replication settings guide](https://mattgibson.dev/blog/unreal-replication-settings)).
+- Adaptive Net Update Frequency: `net.UseAdaptiveNetUpdateFrequency 1` — when enabled, the engine dynamically lowers the update rate to `MinNetUpdateFrequency` when no properties have changed ([Matt Gibson's replication settings guide](https://www.mattgibson.dev/blog/unreal-replication-settings)).
 
 **Tools for this role:**
 `stat blueprints`, `stat unit`, Insights (cpu,frame), Size Map, Blueprint Profiler (Session Frontend, legacy)
@@ -1919,6 +1928,456 @@ Yellow areas = culled (too distant). Address by increasing `r.LumenScene.Surface
 
 ---
 
+## ISPC — Shaders for the CPU **(UE4 + UE5)**
+
+Based on my talks *ISPC: the shaders for CPU* (GIC 2025) and *ISPC: The Next Chapter* (GIC 2026). A written companion to the first talk is available as an article: [ISPC — the shaders of CPU (Pixelant Games blog)](https://pixelantgames.com/blog/ispc-the-shaders-of-cpu/).
+
+[ISPC](https://ispc.github.io/) (Intel Implicit SPMD Program Compiler) is an open-source (BSD) compiler and C-like language that turns scalar-looking code into SIMD code for SSE2/SSE4, AVX/AVX2, AVX-512, and ARM NEON. The mental model is exactly a shader: you write the code for **one element** — like a pixel shader is written for one pixel — and the compiler runs it across a *gang* of SIMD lanes. Unreal has shipped ISPC since **UE 4.23** (introduced for Chaos), and it is the reason big chunks of animation, cloth, and audio code in the engine come with an `.ISPC` console variable next to them.
+
+Why care? Most games use their CPU's SIMD units at a fraction of their potential: auto-vectorization is conservative and breaks easily, and intrinsics are platform-specific and painful to maintain. ISPC sits in the sweet spot:
+
+| Approach | Performance | Portability | Ease of Use | Maintenance |
+|---|---|---|---|---|
+| Scalar C++ | Low | Excellent | Easy | Easy |
+| Compiler auto-vectorization | Medium (fragile) | Excellent | Easy | Easy |
+| SIMD intrinsics | High | Poor | Hard | Hard |
+| **ISPC** | **High** | **Good** | **Medium** | **Medium** |
+| Assembly | Highest | Very poor | Very hard | Very hard |
+
+Intel's own guidance and the ISPC site claim roughly **3× over scalar on 4-wide SSE and 5–6× on 8-wide AVX2** for suitable kernels ([ispc.github.io](https://ispc.github.io/), [Intel — SIMD Made Easy with ISPC](https://www.intel.com/content/dam/develop/external/us/en/documents/simd-made-easy-with-intel-ispc.pdf)). In my experience the cost side matters just as much: a typical kernel takes **3–5 hours in ISPC vs 8–12 hours in intrinsics** — and you get one codebase for SSE, AVX, and NEON instead of three.
+
+The same loop, in intrinsics and in ISPC:
+
+```cpp
+// SSE intrinsics (x86 only, manual tail handling not shown)
+void Add_SSE(float* a, float* b, float* out, int count)
+{
+    for (int i = 0; i < count; i += 4)
+    {
+        __m128 va = _mm_load_ps(&a[i]);
+        __m128 vb = _mm_load_ps(&b[i]);
+        _mm_store_ps(&out[i], _mm_add_ps(va, vb));
+    }
+}
+```
+
+```c
+// ISPC — cross-platform, tail handled automatically
+export void Add_ISPC(uniform float a[], uniform float b[],
+                     uniform float out[], uniform int count)
+{
+    foreach (i = 0 ... count)
+    {
+        out[i] = a[i] + b[i];
+    }
+}
+```
+
+### What Is ISPC and the SPMD Model
+
+**SPMD** (Single Program, Multiple Data) is the programming model; SIMD is the hardware it compiles to. You write one program; a **gang** of *program instances* executes it in lockstep, one instance per SIMD lane:
+
+| Term | Meaning | AVX2 example |
+|---|---|---|
+| Program instance (lane) | One "copy" of your code executing | 8 instances |
+| `programCount` | Instances running in parallel (gang width) | 8 |
+| `programIndex` | ID of the current instance, 0-based | 0–7 |
+| Gang | All program instances executing together | "the gang of 8" |
+
+Gang width depends on the target: 4 on SSE and NEON, 8 on AVX2, 16 on AVX-512. `foreach` maps loop iterations onto lanes and **handles the tail automatically** — 99 iterations on AVX2 run as 12 full chunks plus one final chunk with 3 active and 5 masked-off lanes.
+
+```c
+export void ShowProgramIndex(uniform float output[])
+{
+    foreach (i = 0 ... 32)
+    {
+        output[i] = programIndex;
+    }
+}
+// On AVX2 (8-wide): output[] = {0,1,2,3,4,5,6,7, 0,1,2,3,4,5,6,7, ...}
+```
+
+**`uniform` vs `varying` — the most important concept in the language:**
+
+- `uniform` = one value shared by the whole gang, stored as a scalar. Loop bounds, base pointers, constants, configuration.
+- `varying` = one value **per lane**, stored in a SIMD register (8 floats = 32 bytes on AVX2). **This is the default** — which is gotcha #1: write `uniform` on every scalar explicitly.
+- `uniform float data[]` means the *pointer* is uniform, not the contents — each lane reads a different `data[i]`.
+- uniform → varying converts implicitly (a broadcast). **varying → uniform is a compile error** — which of the 8 values would it take? Use a reduction instead: `reduce_add`, `reduce_min`, `reduce_max`.
+- Varying "infects" everything it touches: `uniform + varying = varying`.
+
+The classic beginner bug and its fix:
+
+```c
+// WRONG — does not compile: a uniform variable cannot be
+// modified under varying control flow
+export uniform int CountAboveThreshold(uniform float data[],
+                                       uniform int count, uniform float threshold)
+{
+    uniform int total = 0;
+    foreach (i = 0 ... count)
+    {
+        if (data[i] > threshold)
+            total += 1;   // error: varying condition, uniform accumulator
+    }
+    return total;
+}
+
+// CORRECT — per-lane accumulator + one reduction at the end
+export uniform int CountAboveThreshold(uniform float data[],
+                                       uniform int count, uniform float threshold)
+{
+    varying int laneCount = 0;
+    foreach (i = 0 ... count)
+    {
+        if (data[i] > threshold)
+            laneCount += 1;
+    }
+    return reduce_add(laneCount);
+}
+```
+
+The same two-phase pattern gives you dot products and statistics:
+
+```c
+export uniform float DotProduct(uniform float A[], uniform float B[], uniform int Count)
+{
+    float Sum = 0.0f;                    // varying accumulator
+    foreach (i = 0 ... Count)
+        Sum += A[i] * B[i];
+    return reduce_add(Sum);              // one reduction at the end, never per iteration
+}
+
+export void ComputeStats(uniform float data[], uniform int count,
+                         uniform float * uniform outMin,
+                         uniform float * uniform outMax,
+                         uniform float * uniform outAvg)
+{
+    varying float vMin = 1e30f, vMax = -1e30f, vSum = 0.0f;
+    foreach (i = 0 ... count)
+    {
+        float val = data[i];
+        vMin = min(vMin, val);
+        vMax = max(vMax, val);
+        vSum += val;
+    }
+    *outMin = reduce_min(vMin);
+    *outMax = reduce_max(vMax);
+    *outAvg = reduce_add(vSum) / count;
+}
+```
+
+**Masking:** an `if` on a varying condition does not branch — both sides execute and only the active lanes commit results. Worst case (50/50 split) costs time(A) + time(B). If lanes usually agree, the cost is minimal. This is identical to divergence on a GPU, and the remedies are the same (see Patterns below).
+
+**Memory layout — SoA is the rule, not a tip.** A varying index into an Array-of-Structures is a **gather**, and gathers are brutally expensive on the CPUs you ship to. Throughput of `vpgatherdd ymm` per instruction ([uops.info](https://uops.info/html-instr/VPGATHERDD_YMM_VSIB_YMM_YMM.html)):
+
+| CPU | Cycles per gather instruction |
+|---|---|
+| Arrow Lake P-core | 3.1 |
+| Zen 5 | 5.7 |
+| Zen 4 / Zen 3 | 8.0 |
+| **Zen 2 (PS5 / Xbox Series)** | **16.0** |
+| Contiguous 256-bit load (comparison) | 0.5 |
+
+A gather is 6–60× slower than a contiguous load — and ~3× more expensive on current consoles than on desktop Zen 5. Structure-of-Arrays turns those gathers into contiguous vector loads:
+
+```c
+// AoS — vectorizes, but every field access is strided
+struct Particle { float x, y, z, vx, vy, vz; };
+export void UpdateParticles_AOS(uniform Particle particles[],
+                                uniform float dt, uniform int count)
+{
+    foreach (i = 0 ... count)
+    {
+        particles[i].x += particles[i].vx * dt;
+        particles[i].y += particles[i].vy * dt;
+        particles[i].z += particles[i].vz * dt;
+    }
+}
+
+// SoA — contiguous loads, optimal SIMD
+export void UpdateParticles_SOA(uniform float x[],  uniform float y[],  uniform float z[],
+                                uniform float vx[], uniform float vy[], uniform float vz[],
+                                uniform float dt, uniform int count)
+{
+    foreach (i = 0 ... count)
+    {
+        x[i] += vx[i] * dt;
+        y[i] += vy[i] * dt;
+        z[i] += vz[i] * dt;
+    }
+}
+```
+
+Unreal's `FVector` arrays are AoS — sometimes it pays to convert to SoA for processing and back afterwards. The stdlib helps: `aos_to_soa3()` / `aos_to_soa4()` / `soa_to_aos3()` unpack packed vectors without gathers (Epic's engine kernels use `Math/Aossoa.isph` for exactly this), and `soa<8>` types plus AoSoA layouts (chunks of `float x[8]; float y[8]; ...`) give cache locality *and* SIMD-friendly access.
+
+**Language correctness notes** (things commonly gotten wrong in online material, including AI-generated tutorials):
+
+- The coherent-branch keyword is **`cif`** (plus `cwhile`/`cfor`/`cdo`), not "coherent if".
+- **Nested `foreach` is illegal.** For 2D iteration use the multi-dimensional form: `foreach (y = 0 ... h, x = 0 ... w)`.
+- `print()` uses **`%` for every type** — there is no `%d`/`%f`: `print("count = %\n", programCount);`
+- **`const` is supported.** Declare `uniform const float data[]` and the generated header emits `const float*` — no `const_cast` wrappers needed on the C++ side.
+- `export` functions can only take `uniform` parameters and return `uniform` values; return multiple results through out-pointers.
+
+### Compiling and Integrating ISPC with UE **(UE4.23+ / UE5)**
+
+**Standalone pipeline:** the ISPC compiler takes a `.ispc` file and emits an object file plus a C/C++ header declaring the exported functions in `namespace ispc`. With multiple targets (`--target=sse4,avx2,avx512skx`) it emits one object per ISA plus a small dispatcher that checks CPUID once at startup and routes every call to the best version — you ship one binary that uses AVX-512 where it exists and falls back to SSE4 where it doesn't. Useful flags: `-O2`, `--pic` (non-Windows), `--emit-asm` (inspect codegen), `-h header.h`. You can also explore codegen interactively at [ispc.godbolt.org](https://ispc.godbolt.org/).
+
+**In Unreal, UBT does almost everything for you:**
+
+1. Add the module dependency in `Build.cs`: `PublicDependencyModuleNames.Add("IntelISPC");` (or Private).
+2. Drop `Foo.ispc` into the module's `Private/` folder — UBT detects `.ispc` files automatically; there is no file list to maintain.
+3. Call it from C++:
+
+```cpp
+#if INTEL_ISPC
+#include "Foo.ispc.generated.h"
+#endif
+
+void FMySystem::Update()
+{
+#if INTEL_ISPC
+    if (bMySystem_ISPC_Enabled)   // gate behind a CVar, Epic-style
+    {
+        ispc::FooUpdate(X, Y, Z, Count);
+        return;
+    }
+#endif
+    FooUpdate_Scalar(X, Y, Z, Count);  // always keep the scalar fallback
+}
+```
+
+4. Keep a scalar C++ path for `!INTEL_ISPC` platforms and for A/B testing. Epic's convention is a `bX_ISPC_Enabled` bool paired with a `X_ISPC_ENABLED_DEFAULT` define per kernel.
+
+**Struct layout must match bit-for-bit** between ISPC and C++ (use fixed-width types, mind padding). Do what Epic does and enforce it at compile time:
+
+```cpp
+static_assert(sizeof(ispc::FVector) == sizeof(Chaos::FVec3), "sizeof(ispc::FVector) != sizeof(Chaos::FVec3)");
+```
+
+**Build settings:**
+
+| Setting | Where | Notes |
+|---|---|---|
+| `bCompileISPC` | TargetRules (`.Target.cs`) | Master toggle; on by default per platform (e.g. enabled by default on Android and Linux since UE 5.5) |
+| `INTEL_ISPC` | Global define | `1/0` — guard your includes and calls with it |
+| `MinCpuArchX64` | TargetRules | None/AVX/AVX2/AVX512 minimum CPU target; replaced `bUseAVX` in UE 5.3 |
+| UBT x64 targets | fixed | `avx512skx-i32x8, avx2, avx, sse4` (multi-target + dispatcher) |
+| UBT arm64 targets | fixed | `neon` |
+
+The generated header lands in `Intermediate/Build/<Platform>/<Arch>/<Target>/<Config>/<Module>/Foo.ispc.generated.h`; objects are compiled per-target (e.g. `Foo.ispc_avx2.obj`) before the C++ and are never part of unity builds.
+
+**Engine/compiler version history:**
+
+| UE | Bundled ISPC | Notes |
+|---|---|---|
+| 4.23 (2019) | — | ISPC introduced for Chaos |
+| 4.25 | — | Console support (PS4/Xbox) |
+| 5.4 | 1.21.0 | |
+| 5.5 | 1.24.0 | ISPC on by default on Android and Linux; multi-arch builds (Mac universal, Win arm64+x64) |
+| 5.6 | 1.24.0 (LTO rebuild) | `.ispc` compilation ~40% faster |
+| 5.7 | 1.25.3 | Consoles keep using the ISPC from the platform SDK (e.g. `prospero-ispc` on PS5) |
+| 5.8 | 1.25.3 | ISPC texture-compression fallback codecs deprecated in favor of Oodle Texture |
+
+Note the engine trails upstream ISPC ([releases](https://github.com/ispc/ispc/releases)) by several versions — recent compilers added VNNI/AVX-512 targets, big shuffle/masked-load speedups, and (1.30+) AMX support, none of which UE uses out of the box yet.
+
+**Known build pains:**
+
+- Unreal Build Accelerator on Linux can fail to generate `.ispc.generated.h` ([FORT-920749 / forums](https://forums.unrealengine.com/t/unreal-build-accelerator-fails-to-generate-ispc-headers-on-linux/2535786)) — disable UBA for ISPC modules or set `bCompileISPC=false` as a workaround.
+- ccache ([#847](https://github.com/ccache/ccache/issues/847)) and FASTBuild ([#759](https://github.com/fastbuild/fastbuild/issues/759)) do not support `.ispc` — plan your build cache accordingly.
+- Antivirus quarantining intermediates manifests as `'FVector3f' is not a member of 'ispc'`.
+
+A minimal, working UE5 integration sample: [UnrealISPCIntegrationSample (GitHub)](https://github.com/sebastianploch/UnrealISPCIntegrationSample).
+
+### Where UE Already Uses ISPC (and How to A/B Test It)
+
+The engine ships roughly **50 ISPC-gated code paths**, each with its own CVar — which makes them free A/B tests on *your* content:
+
+| Area | CVars (selection) | Source |
+|---|---|---|
+| Animation — pose blending | `a.BlendPoseAccumulate.ISPC`, `a.BlendPoseOverwrite.ISPC`, `a.BlendPosesPerBoneFilter.ISPC`, `a.AccumulateLocalSpaceAdditivePose.ISPC`, `a.LerpBoneTransforms.ISPC` | `AnimationRuntime.ispc`, `BonePose.ispc` |
+| Animation — curves & pose conversion | `a.BlendCurves.ISPC`, `a.BonePose.ISPC`, `a.ConvertPoseToAdditive.ISPC`, `a.ConvertPoseToMeshRotation.ISPC`, `a.ConvertMeshRotationPoseToLocalSpace.ISPC` | |
+| Animation — decompression codecs | `a.ConstantKeyLerp.ISPC`, `a.VariableKeyLerp.ISPC`, `a.PerTrackCompression.ISPC` | `AnimEncoding_*.ispc` |
+| Skinning | `a.SkinnedAsset.ISPC` (`a.SkeletalMesh.ISPC` deprecated); `r.GPUSkin.CopyBones.ISPC` (default **false**) | `SkeletalMeshComponent.ispc` |
+| Chaos rigid | `p.Chaos.AABBTransform.ISPC`, `p.Chaos.CalculateBounds.ISPC`, `p.Chaos.BoxCalcBounds.ISPC`, `p.Chaos.TriangleMesh.ISPC`, `p.AggregateGeom.ISPC` | `p.Chaos.Joint.ISPC` defaults to **false** — for joints Epic went with hand-written SIMD instead (`p.Chaos.Solver.Joint.UseSimd`, "up to 15%" in 5.5) |
+| Chaos Cloth | 25+ CVars: `p.ChaosCloth.*.ISPC` for Spring, XPBDSpring, Bending, XPBDBending, AxialSpring, LongRange, Spherical, VelocityField, CollisionSpring, PerParticleCollision, DampVelocity, SkinPhysicsMesh, PreSimulationTransforms, … | Batch-size CVars like `p.Chaos.PerParticleCollision.ISPC.ParallelBatchSize=128` reveal Epic's threading model: an ISPC kernel inside `ParallelFor` |
+| Audio | `au.FloatArrayMath.ISPC` | ~30 kernels in `SignalProcessing/Private/FloatArrayMath.ispc`: ArraySum, Mean, Multiply, ComplexMultiply, MultiplyAddInPlace, LerpAddInPlace, Clamp, MinMaxNormalize, … |
+| Geometry Cache | interpolation of positions/tangents/colors/UVs/motion vectors | |
+| ML | `NNERuntimeBasicCpu.ispc` (ML Deformer, Learning Agents policies), `Learning.ispc` (Adam optimizer) | This is where Epic writes *new* ISPC today |
+| Niagara | `fx.NiagaraVectorFieldUseIspc` — vector-field sampling only | The CPU particle VM (VectorVM) is **not** ISPC |
+
+**What is *not* ISPC** (common myths): Nanite, Mass/MassCrowd, PCG, Recast navmesh, Lumen, Niagara's VectorVM. There is no umbrella `p.Chaos.ISPC` toggle, no `r.Nanite.ISPC`, and no `stat ISPC` — treat any source claiming otherwise with suspicion.
+
+**The easiest A/B tests in the engine:** spawn 100 characters, run `stat anim`, then flip `a.BlendPoseAccumulate.ISPC 0/1` and compare. For audio, `stat audio` plus `au.FloatArrayMath.ISPC 0/1`. Same data, same frame, one variable.
+
+### ISPC Use-Case Scenarios
+
+Where ISPC actually pays off in a game, scenario by scenario. The recurring theme: **latency and ownership first, FLOPS last** — the GPU has more FLOPS than your CPU will ever have, but if gameplay needs the result *this frame*, a GPU round trip (dispatch + 1–3 frames of readback latency) disqualifies it.
+
+**Animation.** Pose blending, additive conversion, curve blending, and animation decompression are dense, independent per-bone math over contiguous arrays — and the results feed IK, physics, and replicated state in the same frame, so the GPU is ruled out. Epic's measured gains in Fortnite (100+ characters on screen): **pose blending ~2×, decompression 1.5–2×** depending on codec ([Intel ISPC in UE4 — GDC 2020](https://media.gdcvault.com/gdc2020/presentations/ISPC_in_Unreal_Engine_4-rous-jeff.pdf)). Epic's honest cost assessment from the same talk: existing systems need data rearranged, branching removed, random access eliminated — and you maintain duplicate ISPC + vanilla paths. **Motion matching is the open opportunity**: UE's Pose Search runs on the CPU (brute force or PCA KD-tree) and no public ISPC port exists. The kernel is a natural fit — an SoA feature database, `foreach` over poses, squared distance accumulated over features, `reduce_min` for the best cost:
+
+```c
+foreach (p = 0 ... numPoses)
+{
+    float d = 0;
+    for (uniform int k = 0; k < K; ++k)
+    {
+        float t = feat[k][p] - q[k];
+        d += t * t;
+    }
+    if (d < best) { best = d; bestIdx = p; }
+}
+uniform float b = reduce_min(best);  // recover index via reduce_equal / packed_store_active
+```
+
+**Rigid skinning.** Neighbouring vertices reference the same bone, so a per-lane transform load is a gather of mostly-identical data. `foreach_unique` over the bone indices in the gang loads each transform **once as uniform** — part of Epic's **+15–20%** on a character skin with rigid chains ("no cost compared to native intrinsics", GDC 2020). Pattern 2 below shows the code.
+
+**Physics and cloth (Chaos).** Constraint solving, bounds computation, per-particle collision, velocity fields. Why CPU at all? Gameplay needs the result this frame; rollback/prediction needs CPU-resident state; fixed-timestep determinism is required; and dedicated servers have no GPU. Chaos, Unity Physics, Havok, and Box2D are all CPU engines for these reasons. Epic's cloth solver is the single biggest ISPC surface in the engine (25+ kernels, see table above).
+
+**Audio DSP.** Audio has a hard real-time deadline: one Wwise audio frame is 1024 samples at 48 kHz = **21.333 ms**, and the guidance is to stay well under half of it ([Wwise CPU guidelines](https://blog.audiokinetic.com/wwise-cpu-optimizations-general-guidelines/)). A GPU round trip of 1–3 frames is an audible click — audio must stay on the CPU. Good ISPC targets: per-voice gain/mix/fades, resampling by voice, and biquad filters **laid out SoA across voices** (a single biquad has a loop-carried dependency along time and cannot vectorize — but 8 voices side by side can). Poor ISPC targets: FFT, convolution reverb, HRTF — there is no mature ISPC FFT library; Steam Audio uses IPP/PFFFT plus hand-written AVX for those. Rule of thumb: *ISPC for the shader-like part of audio (rays, per-voice math); libraries for the transforms.*
+
+**Acoustic ray tracing.** Steam Audio's reflection simulator is a production open-source ISPC kernel worth reading: a gang of rays traced through Embree (`rtcIntersectV` — Embree's ISPC API traces a whole gang per call), energy accumulated into time bins with `atomic_add_local`, `foreach_tiled` over the image of ray directions ([embree_reflection_simulator.ispc](https://github.com/ValveSoftware/steam-audio/blob/master/core/src/core/embree_reflection_simulator.ispc)). Valve's published result: **4–6× during real-time simulation and baking** ([announcement](https://store.steampowered.com/news/app/596420/view/1589135317218082633)). The same "gang of rays in, histogram out" shape fits AI line-of-sight batches, decal projection, and light baking.
+
+**Culling and stream compaction.** CPU visibility results feed draw submission in the same frame (a GPU occlusion query is at least one frame late — the classic HZB pop-in artifact). The prior art predates ISPC: Frostbite's *Culling the Battlefield* (GDC 2011) replaced tree traversal with linear arrays + SIMD — 15,000 spheres in **1.55 ms on 1 job, 0.52 ms on 4 jobs** on Xbox 360-era hardware ([slides](https://www.gamedevs.org/uploads/culling-the-battlefield-battlefield3.pdf)). Intel's ISPC deferred-shading example implements tile light culling with `packed_store_active` — the CPU equivalent of a GPU append buffer, no atomics needed (Pattern 1 below).
+
+**Texture compression and streaming.** The most successful public ISPC codebases are texture encoders: [ISPCTextureCompressor](https://github.com/GameTechDev/ISPCTextureCompressor) (BC1 ~654 Mpix/s — fastest in [Aras Pranckevičius's 2020 survey](https://aras-p.info/blog/2020/12/08/Texture-Compression-in-2020/)) and [bc7e](https://github.com/BinomialLLC/bc7e) (BC7, 2–3× faster than ispc_texcomp at equal quality; open-sourcing funded by Activision). Use them for cook-time encoding, runtime virtual-texture streaming, and user-generated content. Three caveats worth knowing:
+  1. Both repos are now archived (2024 and 2026 respectively), and **UE 5.8 deprecates its ISPC fallback texture codecs in favor of Oodle Texture** — the engine has moved on.
+  2. AVX2-tuned ISPC does not automatically translate to ARM: on an Apple M1 (4-wide NEON) ispc_texcomp ran ~2× slower all-core than an AVX2 laptop ([Aras — M1 tests](https://aras-p.info/blog/2021/01/18/Texture-Compression-on-Apple-M1/)). Write for the *gang*, not for AVX2.
+  3. In January 2026 [bc7f](https://richg42.blogspot.com/2026/01/bc7f-new-real-time-analytical-bc7.html) — a scalar, analytical encoder — beat bc7e's ISPC search. **ISPC does not rescue a bad algorithm**; a better algorithm beats a wider register.
+
+**ML on the CPU.** Epic's newest ISPC lives here: `NNERuntimeBasicCpu.ispc` runs ML Deformer's neural morph models and Learning Agents policies. The NNE docs themselves explain why: GPU inference "will compete with the rendering pipeline for GPU resources", while the CPU runtime "is suited for use cases when there is no budget on the GPU" ([NNE overview](https://dev.epicgames.com/documentation/en-us/unreal-engine/neural-network-engine-overview-in-unreal-engine)). Small per-character/per-agent networks are far too small to amortize a GPU dispatch. Independent datapoint: the GeNN neural-simulation ISPC backend measured **3.05–3.1× on AVX2 and 9.49× on AVX-512** vs scalar (~40% and ~60% of theoretical SIMD peak) ([GeNN blog](https://genn-team.github.io/posts/developing-an-ispc-backend-for-genn-bridging-gpu-and-cpu-performance-for-neural-network-simulations.html)). Recent ISPC adds VNNI int8 `dot` targets and (1.30+) AMX tiles for exactly this workload.
+
+**Procedural generation and data passes.** The official ISPC Perlin-noise example — permutation-table gather and all — runs **5.37× over scalar on one AVX core** ([ispc perf data](https://ispc.github.io/perf.html)). Noise fields, terrain masks, mip generation, mesh quantization, image passes, radix sort over draw keys: all good. Bad candidates: LZ decompression (every symbol depends on the previous one), hashing, string/JSON parsing, prefix sums within one gang. The rule: **a dependency across elements kills the gang — independence across elements is the whole contract.**
+
+**Dedicated servers and headless sims.** Servers have no GPU, but still run physics, navmesh queries, hit registration, and steering for dozens of clients. ISPC makes that mandatory CPU path SIMD — including on ARM servers (Graviton) via the NEON targets. No public industry case study exists yet; treat this one as my thesis, not established practice.
+
+### Advanced ISPC Patterns
+
+Six patterns that show up in production ISPC code (Epic's engine kernels, Steam Audio, Intel's examples):
+
+**Pattern 1 — Stream compaction with `packed_store_active`.** Building a compacted list of survivors (visible lights, hit indices, LOD buckets) without atomics — from Intel's [deferred shading example](https://github.com/ispc/ispc/tree/main/examples/cpu/deferred):
+
+```c
+uniform int32 tileNumLights = 0;
+foreach (lightIndex = 0 ... numLights)
+{
+    bool inFrustum = /* plane tests */;
+    if (any(inFrustum))              // skip the whole block when no lane hit
+    {
+        cif (inFrustum)              // coherent branch: real jump when the gang agrees
+        {
+            tileNumLights += packed_store_active(&tileLightIndices[tileNumLights], lightIndex);
+        }
+    }
+}
+```
+
+`packed_store_active()` writes only the active lanes, contiguously, and returns how many — the CPU equivalent of an append buffer. The tempting alternative — `output[outIndex++]` inside varying control flow — is a race across lanes; don't.
+
+**Pattern 2 — `foreach_unique` and `foreach_active`.** When lanes hold *mostly duplicate* indices (bone indices across neighbouring vertices), `foreach_unique` executes once per distinct value with that value as `uniform` — a uniform load instead of a gather (Epic's rigid-skinning trick, GDC 2020):
+
+```c
+foreach (v = 0 ... numVerts)
+{
+    int bone = boneIndex[v];              // varying
+    foreach_unique (b in bone)            // once per distinct bone in the gang
+    {
+        uniform FTransform T = bones[b];  // uniform load, no gather
+        outPos[v] = transform(T, inPos[v]);
+    }
+}
+```
+
+`foreach_active` iterates the active lanes serially — Epic uses it with a `uniform` accumulate for bounding boxes, because `reduce_min/max` default inactive lanes to 0 and would corrupt an invalid box.
+
+**Pattern 3 — Coherence is the budget.** Effective SIMD width = gang width × fraction of active lanes; at 45% active lanes, AVX-512 behaves like 7 lanes and AVX2 like 3.6. Remedies:
+- `foreach_tiled` maps the gang onto compact 2D tiles instead of a row — neighbouring lanes share cache lines and branch decisions. Worth **+20%** on the official ISPC ray tracer example from one keyword.
+- `cif`/`cwhile`/`cfor` test `all()`/`any()` before branching — they pay when lanes usually agree and *hurt* on incoherent data. Measure.
+- Fix divergence *outside* the kernel: sort or bucket by type/material/LOD in C++, then call the kernel per homogeneous batch. A varying `switch` or varying function pointer serializes over every distinct value — 8 materials in a gang means 8 sequential passes.
+- Use `select()` for small branch bodies; hoist cheap work out of branches.
+
+**Pattern 4 — Atomics and two-phase reductions.** Keep a varying accumulator in the loop and reduce **once** at the end (Pattern in `DotProduct` above). For histograms and shared bins, `atomic_add_local` handles lane collisions inside the gang and `atomic_add_global` works across tasks (Steam Audio accumulates its energy field this way) — both far slower than a reduction, so reserve them for genuinely shared outputs.
+
+**Pattern 5 — The C++ bridge.** Export ABI rules that save hours of debugging:
+
+| Rule | Detail |
+|---|---|
+| `export` parameters must be `uniform` | Exception: `varying T * uniform` pointers (become `void*` in the header) |
+| Never pass NULL | The compiler may read the first element speculatively |
+| Pointers must not alias | `f(x, x)` is undefined behavior |
+| `bool` in memory is 1 byte with value 1 | Changed in ISPC 1.23 — Unity's ASTC encoder hit exactly this (0/255 vs 0/1) |
+| Struct layout must match bit-for-bit | Fixed-width types, mind padding, `static_assert(sizeof)` on both sides |
+| No exceptions, no C++ types | Out-pointers or result structs; error codes |
+| Linkage | Everything lands in `namespace ispc`; declare C functions you call *from* ISPC as `extern "C"` |
+
+When a lane needs to call back into scalar C++ (Steam Audio's per-lane directivity callback; Epic's scene queries), serialize just the callback with `extract`/`insert` over `programCount` and keep the rest of the kernel vectorized.
+
+**Pattern 6 — Tasks: the Epic way vs the `launch` way.** ISPC has built-in task parallelism (`task` functions, `launch[N]`, `sync`) — but it requires you to link a task runtime implementing `ISPCLaunch`/`ISPCAlloc`/`ISPCSync` (the reference `tasksys.cpp` ships in the ISPC examples). **Epic doesn't use `launch` at all**: engine kernels are plain `export` functions called per-batch from `ParallelFor` in C++ — that's what all the `p.Chaos.*.ISPC.ParallelBatchSize` CVars configure. In UE, do it Epic's way: it's simpler to debug and shows up cleanly in Unreal Insights. If you do use `launch`, map the three hooks onto `ParallelFor`/TaskGraph.
+
+**Hybrid dispatch:** below a size threshold the call overhead beats the SIMD gain. A reasonable heuristic is N ≥ ~10 × `programCount` (≥ 80 elements on AVX2) — below that, run the scalar path:
+
+```cpp
+if (Count < Threshold) { UpdateScalar(Data, Count); }
+else                   { ispc::Update(Data, Count); }
+```
+
+### CPU vs ISPC vs GPU — Decision Matrix
+
+The 2026 hardware reality on Steam ([Hardware Survey](https://store.steampowered.com/hwsurvey/), Aug 2026): **AVX2 in 95.4%** of machines, AVX-512 in 23.9%, median 8 physical cores — and in GPU-bound games most of those cores sit idle. Meanwhile AVX-512 on Zen 5 delivered **+56% at effectively zero extra power** in Phoronix's 90-benchmark geomean ([review](https://www.phoronix.com/review/amd-zen5-avx-512-9950x)). There is real headroom on the CPU you already require in your min spec.
+
+**Latency decides, not FLOPS.** A GPU kernel launch costs ~5 µs on a discrete GPU and up to ~90 µs on some integrated/Arc parts, and *reading the result back* costs 1–3 frames (Unity's `AsyncGPUReadback` "adds a few frames of latency"; UE's render thread runs "a frame or two behind the game thread"; Niagara GPU collisions are a frame behind). An ISPC call costs ~0.01–0.05 µs. For once-per-frame gameplay work under ~10⁵–10⁶ elements, the CPU has finished before the GPU dispatch even starts. And in a GPU-bound game the GPU is the *contended* resource — every ms moved off it shortens the frame.
+
+| Question | If yes → |
+|---|---|
+| Is the consumer of the result the GPU (raster, post-processing, screen-space)? | GPU compute — never read back what the GPU consumes |
+| Does gameplay, audio, or netcode need the result *this frame*? | CPU; ISPC if N ≥ ~10³ and the data can be SoA |
+| Dedicated server, headless, or mobile without thermal headroom? | CPU; ISPC |
+| N > ~10⁶ uniform elements and 1–3 frames of latency is fine? | GPU |
+| Pointer chasing, AoS you can't change, N < ~100, strings? | Scalar C++ |
+| Does the compiler already auto-vectorize it? (check `clang -Rpass=loop-vectorize` / MSVC `/Qvec-report:2`) | Leave it — ISPC is for the loops that *don't*: early exits, indirect indexing, function calls, multi-target dispatch |
+| Is the frame GPU-bound at target resolution? | Move work *off* the GPU — the median 8 cores are idle |
+
+On that auto-vectorization point: a 2025 study across the TSVC2 loop suite found GCC vectorizes ~54%, ICX ~50%, and Clang ~46% of loops on x86 ([arXiv 2502.11906](https://arxiv.org/abs/2502.11906)). ISPC exists for the other half.
+
+**Where NOT to use ISPC:** pointer-heavy structures; N below ~10× gang width; long divergent branches; strings/parsing/scripting; loop-carried dependencies (`data[i] += data[i-1]`); work that is already fine on the GPU. And remember Amdahl: 20% scalar setup caps an 8-wide gang at 3.3× no matter how good the kernel is.
+
+### Determinism, Profiling, and Gotchas
+
+**Determinism is a design decision you make before the first kernel, not a flag you add before ship.** Three separate sources make ISPC output drift:
+
+1. **FMA contraction** changes results vs scalar C++, and all engine `.ispc` files build with the same settings — you cannot opt out per file ([ispc issue #2141](https://github.com/ispc/ispc/issues/2141), filed by Intel for Unreal, still open).
+2. **Multi-target dispatch** means different machines run different code: different FMA availability, gang width, and `reduce_add` summation order → different bits per CPU.
+3. **`rcp()`/`rsqrt()`** map to approximation instructions whose results differ between Intel and AMD ([O'Callahan](https://robert.ocallahan.org/2021/09/emulating-amd-rsqrtss-etc-on-intel.html)) — and compiler upgrades change math results too (1.24 unified `round()`, 1.31 changed `asin/acos/atan/log`), so a UE upgrade (5.5→5.7 bumps ISPC 1.24→1.25.3) is a numeric change.
+
+Recipes: for lockstep multiplayer, compile the deterministic kernels with `--opt=disable-fma`, `--math-lib=system`, no fast-math, no `rcp`/`rsqrt`, and pin one target (bc7e's README does exactly this for its deterministic mode); pin the compiler version per shipped title; keep golden-output tests in CI. Or split the problem: fixed-point/scalar for the simulation core, ISPC for everything allowed to drift (render prep, audio, cosmetics). Background: [Gaffer On Games — Floating Point Determinism](https://gafferongames.com/post/floating_point_determinism/), [Box2D v3 determinism](https://box2d.org/posts/2024/08/determinism/).
+
+**Is it even running, and is it actually vectorized?**
+
+- `print("programCount = %\n", programCount);` — prints 8 on AVX2, 4 on SSE4/NEON.
+- Look for per-ISA object files (`*_avx2.obj`) in `Intermediate/Build`.
+- `--emit-asm` (or [ispc.godbolt.org](https://ispc.godbolt.org/)) and grep for `vgatherdps` — a single innocent-looking pointer deref can hide a very expensive gather.
+- `--instrument` makes the compiler report active-lane masks per function/branch (the official `aobench_instrumented` example reports 45% active lanes — that's your divergence number). Cheaper alternative: `popcnt(lanemask())` counters.
+- Wrap the scalar and ISPC paths in the same Unreal Insights scopes (`SCOPE_CYCLE_COUNTER`, `-trace=cpu`) and compare on identical data.
+- Correctness: keep the scalar reference and diff against it with a tolerance of 1e-5…1e-3 (FMA!), fuzz with a fixed seed, and test NaN/Inf/−0/denormal inputs. Masked-off lanes can still raise floating-point exceptions — guard divides with `select`.
+
+**Top 10 gotchas:**
+
+| # | Trap | Fix |
+|---|---|---|
+| 1 | `varying` is the default | Write `uniform` on every scalar, especially loop counters and constants |
+| 2 | A varying index = gather; AVX2 has no scatter at all | SoA layout; `foreach_unique`; `aos_to_soa3/4` |
+| 3 | `--addressing=64` roughly doubles addressing cost | Stay 32-bit unless one kernel really touches > 4 GB |
+| 4 | int8/int16 arithmetic is slower than int32 | Compute in int32, store narrow |
+| 5 | Integer division/modulo have no SIMD instruction | Avoid; precompute reciprocals; shift for powers of two |
+| 6 | `new`/`delete` in ISPC allocate per lane | Prefer caller-owned buffers or `alloca()`; never mix with C++ `free` |
+| 7 | NULL or aliasing pointers into an `export` function | Undefined behavior — pass real, distinct buffers |
+| 8 | Recursion and varying function pointers serialize the gang | Flatten; bucket by type in C++; use tables |
+| 9 | UBA on Linux drops generated headers; ccache/FASTBuild ignore `.ispc` | Disable UBA for ISPC modules; plan the build cache |
+| 10 | `--opt=fast-masked-vload` may read past the end of a buffer | Pad allocations by one gang width |
+
+Two hard-won porting rules to close with (they echo [Rich Geldreich's notes](http://richg42.blogspot.com/2018/04/a-few-intels-spmd-compiler-ispc-cc.html) and my own experience): a first port lands around 2×, and the rest comes from data layout, not from more keywords; and prefer `select`/min/max over `if`, float over int, int32 over int8/int64 — early-outs that help scalar code can *hurt* a gang.
+
+---
+
 ## Bibliography and Further Reading
 
 ### Talks (Unreal Fest, GDC)
@@ -1969,27 +2428,27 @@ Yellow areas = culled (too distant). Address by increasing `r.LumenScene.Surface
 
 **Other Technical References:**
 - [Intax — Blueprint VM Performance Guide](https://intaxwashere.github.io/blueprint-performance/)
-- [George Prosser — Optimizing TWeakObjectPtr](https://prosser.io/optimizing-tweakobjectptr-usage/)
+- [George Prosser — Optimizing TWeakObjectPtr (archived)](https://web.archive.org/web/20260606044449/https://prosser.io/optimizing-tweakobjectptr-usage/)
 - [xbloom.io — World Partition Internals](https://xbloom.io/2025/10/24/unreals-world-partition-internals/)
 - [Chris McCole — Culling in UE4/UE5](https://www.chrismccole.com/blog/culling-in-ue4ue5)
-- [Matt Gibson — Unreal Replication Settings](https://mattgibson.dev/blog/unreal-replication-settings)
-- [Kieran Newland — Replication Graph Tutorial](https://www.kierannewland.co.uk/replication-graph)
+- [Matt Gibson — Unreal Replication Settings](https://www.mattgibson.dev/blog/unreal-replication-settings)
+- [Kieran Newland — Replication Graph Tutorial](https://www.kierannewland.co.uk/replication-graph-how-to-reduce-network-bandwidth-in-unreal/)
 - [ikrima.dev — Fast TArray Replication](https://ikrima.dev/ue4guide/networking/network-replication/fast-tarray-replication/)
 - [rick.me.uk — C++ Profiling in Unreal Engine 5](https://www.rick.me.uk/posts/2024/12/cpp-profiling-in-unreal-engine-5/)
 - [kantandev.com — UE4 Includes, PCH, and IWYU](http://kantandev.com/articles/ue4-includes-precompiled-headers-and-iwyu-include-what-you-use)
 - [unrealcommunity.wiki — Memory Management](https://unrealcommunity.wiki/memory-management-6rlf3v4i)
 - [unrealcommunity.wiki — Hot Reload and Live Coding](https://unrealcommunity.wiki/live-compiling-in-unreal-projects-tp14jcgs)
 - [unrealcommunity.wiki — Profiling with Unreal Insights](https://unrealcommunity.wiki/profiling-with-unreal-insights-ilad24y4)
-- [Simplygon — HLOD Builder for World Partition](https://www.simplygon.com/posts/54162a3d-390c-47f0-bb55-6fed2f626bd8)
+- [Simplygon — HLOD Builder for World Partition](https://www.simplygon.com/blog/54162a3d-390c-47f0-bb55-6fed2f626bd8)
 - [Robert Lewicki — Lambda Weak Pointer Captures](https://unreal.robertlewicki.games/p/daily-unreal-column-50-capture-weak)
 - [voithos.io — Fancier Ticking in Unreal](https://voithos.io/articles/fancier-ticking-in-unreal/)
 - [Tech-Artists.Org — Draw Call Optimization in UE5](https://www.tech-artists.org/t/draw-call-optimization-in-ue5/18217)
 - [Kokku Games — Blueprint Diff with Git](https://kokkugames.com/tutorial-stop-guessing-what-changed-in-your-blueprintsgit-blueprint-diff-inside-unreal-engine/)
-- [Rév O'Conner — Texture Compression and BCn](https://www.revoconner.com/post/texture-compression-for-unreal-engine-bcn-and-texture-packing)
+- [Rév O'Conner — Texture Compression and BCn (archived)](https://web.archive.org/web/20260118132839/https://www.revoconner.com/post/texture-compression-for-unreal-engine-bcn-and-texture-packing)
 - [TechArtHub — Texture Streaming Pool](https://techarthub.com/fixing-texture-streaming-pool-over-budget-in-unreal/)
 - [Froyok — Render Target Performance Analysis](https://www.froyok.fr/blog/2020-06-render-target-performances/)
 - [KitBash3D — Level Instances and Packed Level Actors](https://help.kitbash3d.com/en/articles/12038349-a-quick-guide-packed-level-actors-level-instancing-in-unreal-engine-with-kitbash3d)
-- [Outscal — Timers vs Tick Guide](https://outscal.com/blog/unreal-engine-timers-vs-tick)
+- [Gameplay Timers (Unreal Engine Documentation)](https://dev.epicgames.com/documentation/en-us/unreal-engine/gameplay-timers-in-unreal-engine)
 - [CBgameDev — UE4/UE5 Optimising Tick Rate](https://www.cbgamedev.com/blog/quick-dev-tip-74-ue4-ue5-optimising-tick-rate)
 - [Brushify — RVT Bootcamp (YouTube)](https://www.youtube.com/watch?v=0-xXIMjlmqE)
 - [Epic Developer Community — Tasks System](https://dev.epicgames.com/documentation/unreal-engine/tasks-systems-in-unreal-engine)
@@ -1997,7 +2456,7 @@ Yellow areas = culled (too distant). Address by increasing `r.LumenScene.Surface
 - [Coconut Lizard — Strings and Other Things](https://www.coconutlizard.co.uk/blog/strings-and-other-things/)
 - [Daanmeysman ArtStation — Quad Overdraw and Triangles](https://daanmeysman.artstation.com/blog/7goy/keeping-your-games-optimized-part-1-triangles)
 - [MoreVFX Academy — Niagara Optimization Guide](https://morevfxacademy.com/complete-guide-to-niagara-vfx-optimization-in-unreal-engine/)
-- [Georgy Prosser — Optimizing TWeakObjectPtr](https://prosser.io/optimizing-tweakobjectptr-usage/)
+- [George Prosser — Optimizing TWeakObjectPtr (archived)](https://web.archive.org/web/20260606044449/https://prosser.io/optimizing-tweakobjectptr-usage/)
 - [Intax Blueprint Performance Guide](https://intaxwashere.github.io/blueprint-performance/)
 
 ### Official Documentation (dev.epicgames.com)
@@ -2035,3 +2494,21 @@ Yellow areas = culled (too distant). Address by increasing `r.LumenScene.Surface
 - [Epic Forums — Shader Permutations Knowledge Base](https://forums.unrealengine.com/t/knowledge-base-understanding-shader-permutations/264928)
 - [Epic Forums — OFPA Best Practices](https://forums.unrealengine.com/t/tips-and-best-practices-for-one-file-per-actor/837886)
 - [Epic Forums — Lumen Surface Cache Scale](https://forums.unrealengine.com/t/lumen-surface-cache-scale-woes/2669365)
+
+### ISPC
+
+- [ISPC home](https://ispc.github.io/) — [User's Guide](https://ispc.github.io/ispc.html), [Performance Guide](https://ispc.github.io/perfguide.html), [official performance data](https://ispc.github.io/perf.html)
+- [ISPC releases and release notes](https://github.com/ispc/ispc/releases)
+- [ISPC CPU examples (deferred shading, noise, sort, ray tracer, aobench)](https://github.com/ispc/ispc/tree/main/examples/cpu)
+- [ISPC Compiler Explorer](https://ispc.godbolt.org/)
+- [Intel — ISPC in Unreal Engine 4 (GDC 2020, PDF)](https://media.gdcvault.com/gdc2020/presentations/ISPC_in_Unreal_Engine_4-rous-jeff.pdf)
+- [Intel — Unreal Engine's Chaos physics with ISPC (PDF)](https://www.intel.com/content/dam/develop/external/us/en/documents/unreal-engines-new-chaos-physics-system-screams-with-in-depth-intel-cpu-optimizations.pdf)
+- [Intel — SIMD Made Easy with Intel ISPC (PDF)](https://www.intel.com/content/dam/develop/external/us/en/documents/simd-made-easy-with-intel-ispc.pdf)
+- [Grzegorz Wątroba — ISPC: the shaders of CPU (Pixelant Games)](https://pixelantgames.com/blog/ispc-the-shaders-of-cpu/)
+- [Matt Pharr — The story of ispc](https://pharr.org/matt/blog/2018/04/18/ispc-origins) and the [original ispc paper (PDF)](https://pharr.org/matt/assets/ispc.pdf)
+- [Rich Geldreich — Notes on Intel's ISPC](http://richg42.blogspot.com/2018/04/a-few-intels-spmd-compiler-ispc-cc.html)
+- [Steam Audio — Embree reflection simulator kernel (production ISPC)](https://github.com/ValveSoftware/steam-audio/blob/master/core/src/core/embree_reflection_simulator.ispc)
+- [bc7e — ISPC BC7 encoder](https://github.com/BinomialLLC/bc7e) and [ISPCTextureCompressor](https://github.com/GameTechDev/ISPCTextureCompressor)
+- [Aras Pranckevičius — Texture Compression in 2020](https://aras-p.info/blog/2020/12/08/Texture-Compression-in-2020/) and [on Apple M1](https://aras-p.info/blog/2021/01/18/Texture-Compression-on-Apple-M1/)
+- [UnrealISPCIntegrationSample — minimal UE5 integration](https://github.com/sebastianploch/UnrealISPCIntegrationSample)
+- [JetBrains Rider — ISPC language support](https://www.jetbrains.com/help/rider/Unreal_Engine__ISPC.html)

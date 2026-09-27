@@ -294,7 +294,7 @@ After passing basic checks, investigate:
 
 - [Saving memory with Addressables](https://unity.com/blog/technology/tales-from-the-optimization-trenches-saving-memory-with-addressables)
 - [Unite 2022 – Performance in Unity](https://www.youtube.com/c/UnityTechnologies)
-- [Unity SRP Batcher — official deep dive](https://blog.unity.com/engine-platform/srp-batcher-speed-up-your-rendering)
+- [Unity SRP Batcher — official deep dive](https://unity.com/blog/engine-platform/srp-batcher-speed-up-your-rendering)
 
 ### Community Guides and Blogs
 
@@ -309,7 +309,7 @@ After passing basic checks, investigate:
 - [NotSlot — Unity Optimization](https://www.youtube.com/@NotSlot) — Performance-focused Unity content
 - [fazz.dev — SRP Batcher deep dive](https://fazz.dev/articles/building-srp-part-three)
 - [Azur Games — SRP Batcher optimization](https://azurgames.com/blog/optimizing-the-midcore-increasing-fps-using-srp-batcher/)
-- [Angry Shark Studio — UI Toolkit vs UGUI 2025](https://www.angry-shark-studio.com/blog/unity-ai-toolkit-vs-ugui-2025-guide/)
+- [Angry Shark Studio — UI Toolkit vs UGUI 2025](https://www.angry-shark-studio.com/blog/unity-ui-toolkit-vs-ugui-2025-guide/)
 - [Coffee Brain Games — Reducing Compile Time with asmdef](https://coffeebraingames.wordpress.com/2018/01/21/reducing-compile-time-in-unity-using-assembly-definition-files/)
 - [Generalist Programmer — Burst Compiler Guide](https://generalistprogrammer.com/tutorials/unity-burst-compiler-complete-performance-optimization-guide)
 - [Embrace.io — GC spikes in Unity](https://embrace.io/blog/garbage-collector-spikes-unity/)
@@ -319,7 +319,7 @@ After passing basic checks, investigate:
 - [Steam Audio Unity Guide](https://valvesoftware.github.io/steam-audio/doc/unity/guide.html)
 - [Mirror — Lag Compensation](https://mirror-networking.gitbook.io/docs/manual/general/lag-compensation)
 - [HackerNoon — Unity 2023.1 Awaitable Class](https://hackernoon.com/unity-20231-introduces-awaitable-class)
-- [NativeContainer allocators guide — Outscal](https://outscal.com/blog/how-to-choose-and-manage-collections-for-performance-in-unity)
+- [Allocator overview — Unity Collections Manual](https://docs.unity3d.com/Packages/com.unity.collections@2.5/manual/allocator-overview.html)
 - [Techarthub — Texture Compression in Unity](https://techarthub.com/an-introduction-to-texture-compression-in-unity/)
 - [Chunk iteration in Entities 1.0 — Coffee Brain Games](https://coffeebraingames.wordpress.com/2023/06/25/chunk-iteration-in-entities-1-0/)
 

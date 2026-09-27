@@ -42,6 +42,6 @@ A curated list of plugins, packages, and tools that help with (or are relevant t
 |---|---|---|
 | [UnityMeshSimplifier](https://github.com/Whinarn/UnityMeshSimplifier) | Automatic mesh decimation / LOD generation | Free, MIT |
 | [Amplify Impostors](https://assetstore.unity.com/packages/tools/utilities/amplify-impostors-119877) | Bakes meshes into billboard impostors | Massive draw call and triangle savings for distant objects |
-| [GPU Instancer Pro](https://assetstore.unity.com/packages/tools/utilities/gpu-instancer-pro-283742) | Indirect GPU instancing for vegetation/props/crowds | For pre-Unity 6 projects without GPU Resident Drawer |
+| [GPU Instancer Pro](https://assetstore.unity.com/packages/tools/utilities/gpu-instancer-pro-290293) | Indirect GPU instancing for vegetation/props/crowds | For pre-Unity 6 projects without GPU Resident Drawer |
 
 *(section to be expanded)*
