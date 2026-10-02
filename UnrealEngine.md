@@ -327,7 +327,7 @@ void AMyActor::BeginPlay()
 
 Getting the order wrong can cause `SetActorTickEnabled(false)` in BeginPlay to be overwritten by the actor initialization sequence ([Epic Forums — SetActorTickEnabled bugged](https://forums.unrealengine.com/t/setactortickenabled-bugged/357835)).
 
-- Set `Tick Interval (secs)` for actors that need periodic but not per-frame updates (AI checks, regeneration, proximity queries). 0.1s = 10 ticks/second. Don't set below 0.05s — may fire multiple times per frame at high framerates ([CBgameDev tick guide](https://www.cbgamedev.com/blog/quick-dev-tip-74-ue4-ue5-optimising-tick-rate)).
+- Set `Tick Interval (secs)` for actors that need periodic but not per-frame updates (AI checks, regeneration, proximity queries). 0.1s = 10 ticks/second. Don't set below 0.05s — may fire multiple times per frame at low framerates ([CBgameDev tick guide](https://www.cbgamedev.com/blog/quick-dev-tip-74-ue4-ue5-optimising-tick-rate)).
 - Replace Tick polling with Event Dispatchers. A dispatcher fires only when state changes; a Tick check fires every frame regardless. This is architecturally the Observer pattern.
 - Event mechanism selection:
 
