@@ -305,7 +305,7 @@ Every Blueprint node is a bytecode instruction interpreted by the VM. The VM ove
 - **`ForEachLoop` without break for search** — always iterates the full array. Use `ForEachLoopWithBreak` and wire the Break pin.
 - **Spawning actors in Construction Script** — runs every time any property changes in the editor. Orphaned actors accumulate. Use Child Actor Components or spawn in BeginPlay.
 - **Missing `Replicates = true`** in Class Defaults for networked actors — no variables replicate, no RPCs execute on remote machines.
-- **`Make Array` inside Event Tick** — heap allocation every frame, GC pressure. Pre-allocate as a member variable.
+- **`Make Array` inside Event Tick** — heap allocation every frame. Pre-allocate as a member variable.
 - **`Delay` for cancellable timed logic** — cannot be cancelled. Use `Set Timer by Event` with a stored handle.
 - **`Sequence` node misused for deferred work** — all outputs fire synchronously in the same frame; it does not spread work over time.
 
